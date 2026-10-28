@@ -38,6 +38,7 @@ export async function snapshotSessionsNow() {
   snapshotPending = false;
   const list = [...sessions.values()].map((s) => ({
     id: s.id,
+    userId: s.userId || null,
     createdAt: s.createdAt,
     lastAccess: s.lastAccess,
     pendingAction: s.pendingAction || null,
@@ -62,6 +63,7 @@ export async function restoreSessions() {
   for (const s of alive) {
     sessions.set(s.id, {
       id: s.id,
+      userId: s.userId || null,
       createdAt: s.createdAt || now,
       lastAccess: s.lastAccess || now,
       messages: s.messages.slice(-200),
@@ -88,10 +90,12 @@ function touch(session) {
   sessions.set(session.id, session);
 }
 
-export function getSession(id) {
+export function getSession(id, userId = null) {
   let s = sessions.get(id);
   if (!s) {
-    s = { id, createdAt: Date.now(), lastAccess: Date.now(), messages: [], pendingAction: null };
+    s = {
+      id, userId: userId || null, createdAt: Date.now(), lastAccess: Date.now(), messages: [], pendingAction: null,
+    };
     sessions.set(id, s);
     if (sessions.size > MAX_SESSIONS) {
       // 淘汰最久未访问的一个
@@ -101,6 +105,14 @@ export function getSession(id) {
     }
     scheduleSnapshot();
   } else {
+    // 会话归属校验：身份体系开启后，别人的 sessionId 不能续聊
+    if (userId && s.userId && s.userId !== userId) {
+      const err = new Error('该会话属于其他用户');
+      err.code = 'SESSION_FORBIDDEN';
+      throw err;
+    }
+    // 兼容开启身份前创建的老会话：首次带身份的访问直接认领
+    if (userId && !s.userId) s.userId = userId;
     touch(s);
   }
   return s;
@@ -155,10 +167,12 @@ export function storeStats() {
   };
 }
 
-export function listSessions() {
+export function listSessions({ userId = null } = {}) {
   return [...sessions.values()]
+    .filter((s) => !userId || s.userId === userId)
     .map((s) => ({
       id: s.id,
+      userId: s.userId || null,
       messageCount: s.messages.length,
       createdAt: s.createdAt,
       preview: (s.messages.find((m) => m.role === 'user') || {}).content || '',

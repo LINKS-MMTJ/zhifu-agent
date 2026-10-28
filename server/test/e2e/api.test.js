@@ -28,6 +28,13 @@ test('GET /api/knowledge 公开接口只给规模统计，不暴露文档清单'
   assert.ok(d.docsCount >= 6);
   assert.ok(d.chunks >= 6);
   assert.equal(d.docs, undefined, '文档清单属于内部信息，不应出现在公开接口');
+  assert.equal(d.vectorBackend.backend, 'memory', '默认使用内存向量后端');
+});
+
+test('身份: 未开启强制鉴权时签发接口返回空令牌（前端不需要带 Authorization）', async () => {
+  const d = await (await post('/api/auth/guest', {})).json();
+  assert.equal(d.enforced, false);
+  assert.equal(d.token, '');
 });
 
 test('GET /api/knowledge 管理接口返回完整文档清单', async () => {

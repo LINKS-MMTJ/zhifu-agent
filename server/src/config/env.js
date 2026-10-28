@@ -12,6 +12,7 @@ const NUMBER_RULES = {
   UPSTREAM_TIMEOUT_MS: [1000, 600_000],
   SSE_HEARTBEAT_MS: [500, 120_000],
   SHUTDOWN_TIMEOUT_MS: [1000, 120_000],
+  USER_TOKEN_TTL_MS: [60_000, 30 * 24 * 3600 * 1000],
   DAILY_COST_LIMIT: [0, 1_000_000_000],
   DAILY_COST_SOFT_RATIO: [0.1, 0.99],
   KB_HIERARCHICAL_MIN: [0, 10_000_000],
@@ -34,6 +35,15 @@ export function validateEnv(env = process.env) {
   }
   if (env.ADMIN_TOKEN && env.ADMIN_TOKEN.length < 16) {
     warnings.push('ADMIN_TOKEN 长度小于 16，建议使用更长的随机串');
+  }
+  if (env.USER_AUTH && !['off', 'enforce'].includes(env.USER_AUTH)) {
+    errors.push('USER_AUTH 只能是 off 或 enforce');
+  }
+  if (env.USER_AUTH === 'enforce' && !env.USER_TOKEN_SECRET) {
+    errors.push('USER_AUTH=enforce 时必须设置 USER_TOKEN_SECRET，否则无法签发与校验用户令牌');
+  }
+  if (env.USER_TOKEN_SECRET && env.USER_TOKEN_SECRET.length < 16) {
+    warnings.push('USER_TOKEN_SECRET 长度小于 16，建议使用更长的随机串');
   }
   if (!env.DEEPSEEK_API_KEY) {
     warnings.push('未配置 DEEPSEEK_API_KEY，将使用离线 Mock 模型');

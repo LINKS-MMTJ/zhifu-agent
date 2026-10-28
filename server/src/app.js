@@ -5,7 +5,7 @@ import express from 'express';
 import cors from 'cors';
 import { runAgent } from './agent/orchestrator.js';
 import { router } from './router/modelRouter.js';
-import { getCallLogs, listSessions, costReport, storeStats, addMessage } from './store/sessions.js';
+import { getCallLogs, listSessions, costReport, storeStats, addMessage, getSession } from './store/sessions.js';
 import { kbStore, knowledgeInfo } from './rag/knowledge.js';
 import { saveAndIngest, MAX_UPLOAD_BYTES, UPLOAD_EXTENSIONS } from './rag/upload.js';
 import { getOrderDetail, createReturn, applyRefund } from './tools/ecommerce.js';
@@ -14,6 +14,7 @@ import { ensureIntegrations, integrationsInfo } from './integrations/index.js';
 import { verify } from './integrations/signature.js';
 import { recordInbound, emitEvent } from './integrations/events.js';
 import { beginRequest, endRequest, snapshot } from './observability/metrics.js';
+import { startSpan, setSpanAttrs, endSpan } from './observability/otel.js';
 import { traceMiddleware } from './observability/trace.js';
 import { audit, queryAudit, auditEnabled } from './observability/audit.js';
 import { logInfo, logError } from './observability/logger.js';
@@ -21,6 +22,7 @@ import { checkQuota, quotaState } from './guard/quota.js';
 import { checkContent } from './guard/moderation.js';
 import { concurrencyGuard, rateLimit, acquireSessionLock, lockStats } from './middleware/guards.js';
 import { requireAdmin, adminOrWebhook } from './middleware/auth.js';
+import { userAuth, userAuthEnabled, issueGuestToken } from './middleware/userAuth.js';
 
 const HEARTBEAT_MS = Number(process.env.SSE_HEARTBEAT_MS || 15_000);
 const MAX_MESSAGE_CHARS = Number(process.env.MAX_MESSAGE_CHARS || 4000);
@@ -106,9 +108,29 @@ export function createApp() {
     });
   });
 
+  // —— 终端用户身份：签发访客令牌 ——
+  // 默认不强制（USER_AUTH=off），需要时设 USER_AUTH=enforce 并配 USER_TOKEN_SECRET
+  app.post('/api/auth/guest', rateLimit, (req, res) => {
+    const enforced = userAuthEnabled();
+    // 没开强制鉴权、也没配密钥时，不签发令牌（前端拿到空串后就不带 Authorization）
+    if (!enforced && !process.env.USER_TOKEN_SECRET) {
+      return res.json({
+        token: '', userId: null, expiresAt: null, enforced: false,
+        hint: 'USER_AUTH 未开启，访客令牌可选',
+      });
+    }
+    try {
+      const issued = issueGuestToken();
+      return res.json({ ...issued, enforced });
+    } catch (err) {
+      logError('auth.guest_failed', { error: err.message });
+      return res.status(503).json({ error: '用户身份服务未配置' });
+    }
+  });
+
   // —— 对话（SSE 流式）——
   // 限流 → 并发上限 → 会话串行锁 → 流式输出（含心跳与客户端断开处理）
-  app.post('/api/chat', rateLimit, concurrencyGuard, async (req, res) => {
+  app.post('/api/chat', rateLimit, concurrencyGuard, userAuth, async (req, res) => {
     const { sessionId = 's-' + Date.now(), message = '', confirm = false, strategy } = req.body || {};
 
     // 入参校验：不合法直接 400，不进业务链路。
@@ -121,6 +143,17 @@ export function createApp() {
     }
     if (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId)) {
       return res.status(400).json({ error: 'sessionId 不合法（1-64 位字母、数字、下划线或短横线）' });
+    }
+
+    // 会话归属：开启身份体系后，别人的 sessionId 不能拿来续聊
+    try {
+      getSession(sessionId, req.userId || null);
+    } catch (err) {
+      if (err.code === 'SESSION_FORBIDDEN') {
+        audit({ action: 'chat.denied', target: sessionId, result: 'session_forbidden', meta: { userId: req.userId } });
+        return res.status(403).json({ error: '该会话不属于当前用户' });
+      }
+      throw err;
     }
 
     // 成本护栏：超过硬阈值直接拒绝；到软阈值自动把策略降级为"价格优先"
@@ -162,6 +195,9 @@ export function createApp() {
 
     beginRequest();
     const t0 = Date.now();
+    // 一条对话的端到端 span：意图、模式、模型、复杂度在收到 meta 时补上
+    const span = startSpan('chat.request', { sessionId });
+    let spanError = null;
     let counted = false;
     const finish = (ok = true, kind = 'ok') => {
       if (counted) return;
@@ -207,12 +243,24 @@ export function createApp() {
     await send({ type: 'session', sessionId });
 
     try {
-      for await (const ev of runAgent({ sessionId, message, confirm, strategy: effectiveStrategy })) {
+      for await (const ev of runAgent({
+        sessionId, message, confirm, strategy: effectiveStrategy, userId: req.userId || null,
+      })) {
+        if (ev.type === 'meta') {
+          setSpanAttrs(span, {
+            intent: ev.intent,
+            mode: ev.mode,
+            model: ev.model?.id,
+            complexity: ev.complexity,
+            strategy: ev.strategy,
+          });
+        }
         if (clientClosed) break; // 客户端走了就停止生成，释放资源
         await send(ev);
       }
       finish(true);
-    } catch {
+    } catch (err) {
+      spanError = err;
       await send({ type: 'error', message: '服务暂时不可用，请稍后重试' });
       finish(false, 'error');
     } finally {
@@ -221,6 +269,7 @@ export function createApp() {
         res.write('event: done\ndata: {}\n\n');
         res.end();
       }
+      endSpan(span, spanError);
       release();
     }
   });
@@ -272,6 +321,17 @@ export function createApp() {
   app.get('/api/admin/cost', (req, res) => res.json(costReport()));
   app.get('/api/admin/logs', (req, res) => res.json(getCallLogs(50)));
   app.get('/api/admin/sessions', (req, res) => res.json(listSessions()));
+
+  // —— 客户侧会话列表：只能看到自己的（开启身份体系后才有区分意义）——
+  app.get('/api/sessions', userAuth, (req, res) => {
+    const rows = listSessions({ userId: req.userId || null }).map((s) => ({
+      id: s.id,
+      messageCount: s.messageCount,
+      createdAt: s.createdAt,
+      preview: s.preview,
+    }));
+    res.json({ sessions: rows, enforced: userAuthEnabled() });
+  });
   app.get('/api/admin/store', (req, res) => res.json(storeStats()));
 
   // —— 知识库：公开接口只给规模统计，文档清单属于内部信息，放到管理接口 ——
@@ -284,6 +344,7 @@ export function createApp() {
       builtAt: info.builtAt,
       indexBytes: info.indexBytes,
       byFormat: info.byFormat,
+      vectorBackend: info.vectorBackend,
       supportedFormats: UPLOAD_EXTENSIONS,
       maxUploadMb: Math.round(MAX_UPLOAD_BYTES / 1048576),
     });
@@ -308,6 +369,7 @@ export function createApp() {
       indexBytes: info.indexBytes,
       byFormat: info.byFormat,
       failures: info.failures,
+      vectorBackend: info.vectorBackend,
       supportedFormats: UPLOAD_EXTENSIONS,
       maxUploadMb: Math.round(MAX_UPLOAD_BYTES / 1048576),
     });

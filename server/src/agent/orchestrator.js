@@ -4,8 +4,8 @@
 import { classifyComplexity } from '../router/complexity.js';
 import { router } from '../router/modelRouter.js';
 import { streamModel } from '../llm/index.js';
-import { retrieve } from '../rag/knowledge.js';
-import { getTool, matchToolByTrigger } from '../tools/registry.js';
+import { retrieveAsync } from '../rag/knowledge.js';
+import { getTool, matchToolByTrigger, toolSchemas } from '../tools/registry.js';
 import { getOrderPhone, phoneMatches } from '../tools/ecommerce.js';
 import { extractArgs } from '../integrations/connectors.js';
 import { emitEvent } from '../integrations/events.js';
@@ -14,7 +14,9 @@ import { decideAnswerMode } from './answerPolicy.js';
 import { buildMessages } from './prompts.js';
 import { buildAction, buildConfirmAction } from './actions.js';
 import { classifyMeta, stripSocial, META } from './metaIntent.js';
+import { planByModel, plannerMode } from './planner.js';
 import { audit } from '../observability/audit.js';
+import { startSpan, setSpanAttrs, endSpan } from '../observability/otel.js';
 import { logError } from '../observability/logger.js';
 import { recordCost } from '../guard/quota.js';
 
@@ -202,11 +204,29 @@ function planTools(intent, text, carriedOrderId = null, carriedPhone = null) {
   return internal;
 }
 
+// 模型规划出来的调用也要走同一套必填参数校验，不能绕开追问
+function withMissing(list) {
+  for (const t of list) {
+    t.missing = missingParams(getTool(t.name), t.args);
+  }
+  return list;
+}
+
+// 模型规划出的工具反推意图，保证 audit / 统计里的 intent 不会一直是 out_of_scope
+const INTENT_BY_TOOL = {
+  queryOrder: 'order',
+  trackLogistics: 'logistics',
+  createReturn: 'return',
+  applyRefund: 'refund',
+};
+
 /**
  * 运行一轮 Agent，产出事件流
  */
-export async function* runAgent({ sessionId, message, confirm = false, strategy }) {
-  const session = getSession(sessionId);
+export async function* runAgent({ sessionId, message, confirm = false, strategy, userId = null }) {
+  const session = getSession(sessionId, userId);
+  // 审计里的"谁"：开启用户身份后记 userId，否则退回 sessionId
+  const actor = session.userId ? `user:${session.userId}` : `session:${sessionId}`;
   // 策略只有两个来源：管理端设置的全局默认（router.strategy）与本请求的显式覆盖。
   // 不再写回会话——否则会话里会留下一份界面上看不见的"第二真相"，和运营页显示的对不上。
   const strategyOverride = strategy || null;
@@ -266,7 +286,7 @@ export async function* runAgent({ sessionId, message, confirm = false, strategy 
     if (/物流|快递|到哪|签收|发货/.test(message)) intent = 'logistics';
     else if (/订单|状态|进度/.test(message)) intent = 'order';
   }
-  const complexity = classifyComplexity(message, intent);
+  let complexity = classifyComplexity(message, intent);
 
   // 用户切换了话题：放弃上一轮待确认的写操作。
   // 否则模型会拿着"待退货"的历史继续追问退货原因，而用户其实已经在问别的事了。
@@ -327,13 +347,32 @@ export async function* runAgent({ sessionId, message, confirm = false, strategy 
   // —— 工具规划 + 写操作二次确认 ——
   let toolResults = [];
   let awaitingConfirm = false;
+  let plannerUsed = 'rules';
+  let plannerModel = null;
+
+  // 统一走这里执行工具：只为了给每次调用留一个 span（未启用 OTel 时是 no-op）
+  const callTool = async (name, args) => {
+    const span = startSpan('tool.call', {
+      tool: name,
+      readonly: Boolean(getTool(name)?.readonly),
+      order: args?.orderId || undefined,
+    });
+    try {
+      const result = await getTool(name).handler(args);
+      setSpanAttrs(span, { result_ok: result?.ok !== false && result?.found !== false });
+      endSpan(span);
+      return result;
+    } catch (err) {
+      endSpan(span, err);
+      throw err;
+    }
+  };
 
   if (confirm && session.pendingAction) {
     const pa = session.pendingAction;
     session.pendingAction = null;
     const def = getTool(pa.tool);
     const ttl = confirmTtlMs();
-    const actor = `session:${sessionId}`;
 
     // 闸 1：时效。超过有效期一律作废，必须重新发起，避免"隔了很久的一句确认"把钱退出去
     if (!pa.at || Date.now() - pa.at > ttl) {
@@ -375,7 +414,7 @@ export async function* runAgent({ sessionId, message, confirm = false, strategy 
     }
 
     try {
-      const result = await def.handler(pa.args);
+      const result = await callTool(pa.tool, pa.args);
       toolResults.push({ name: pa.tool, args: pa.args, result });
       // 闸 3：执行后记录幂等结果，重复确认不会再执行一次
       session.lastWrite = { tool: pa.tool, args: pa.args, at: Date.now(), idem: pa.idem };
@@ -410,7 +449,7 @@ export async function* runAgent({ sessionId, message, confirm = false, strategy 
     const text = `这笔【${desc}】刚刚已经办理完成，不用再确认了。还有其他需要吗？`;
     addMessage(sessionId, { role: 'assistant', content: text, mode: 'tool', intent });
     audit({
-      actor: `session:${sessionId}`,
+      actor,
       action: 'tool.write',
       target: session.lastWrite.args?.orderId || session.lastWrite.tool,
       result: 'duplicate',
@@ -423,7 +462,34 @@ export async function* runAgent({ sessionId, message, confirm = false, strategy 
     yield { type: 'done', modelId: null, cost: 0, latencyMs: 0, duplicate: true };
     return;
   } else {
-    for (const tc of planTools(intent, message, extractOrderId(message) ? null : prior.orderId, session.verifiedPhone || null)) {
+    let planned = planTools(intent, message, extractOrderId(message) ? null : prior.orderId, session.verifiedPhone || null);
+
+    // 规则没命中，但明显是业务诉求（含售后领域词或订单号）：
+    // 交给模型做一次 function calling，把"词表外说法"翻译成工具调用。
+    // 开关默认关闭（PLANNER=llm 才启用），离线评测与既有测试仍走纯规则链路。
+    const looksBusiness = DOMAIN.test(message) || /SO\d{6,}/i.test(message) || /\b\d{8}\b/.test(message);
+    if (!planned.length && plannerMode() === 'llm' && !classifyMeta(message) && looksBusiness) {
+      const plannedByModel = await planByModel({
+        message,
+        history,
+        tools: toolSchemas(),
+        complexity: complexity.level,
+        strategy: strategyOverride,
+      });
+      if (plannedByModel.calls.length) {
+        planned = withMissing(plannedByModel.calls);
+        plannerUsed = 'llm';
+        plannerModel = plannedByModel.modelId;
+        // 模型认出了工具，就按工具反推意图，后面的模式、审计、统计才一致
+        const mapped = INTENT_BY_TOOL[planned[0].name];
+        if (mapped && mapped !== intent) {
+          intent = mapped;
+          complexity = classifyComplexity(message, intent);
+        }
+      }
+    }
+
+    for (const tc of planned) {
       const def = getTool(tc.name);
       if (!def) continue;
 
@@ -466,7 +532,7 @@ export async function* runAgent({ sessionId, message, confirm = false, strategy 
         };
       } else {
         try {
-          const result = await def.handler(tc.args);
+          const result = await callTool(tc.name, tc.args);
           toolResults.push({ name: tc.name, args: tc.args, result });
           emitEvent('tool.executed', {
             tool: tc.name, readonly: def.readonly, source: def.source || 'builtin',
@@ -503,12 +569,19 @@ export async function* runAgent({ sessionId, message, confirm = false, strategy 
     const explainOnly = ctxDep && /^(为什么|为啥|怎么会|然后呢|还有呢|嗯)/.test(core) && !looksLikeAction(core);
 
     if (!explainOnly) {
-      // 省略式追问先按当前短语检索（"那退款呢"→"退款"），
-      // 命中不了再把上一句拼进来，避免上文主题盖过这一句
-      const direct = ctxDep && followCore ? followCore : core;
-      retrieved = retrieve(direct, 3, { requireEvidence: intent !== 'faq' });
-      if (!retrieved.length && ctxDep && prior.lastUser && followCore) {
-        retrieved = retrieve(`${prior.lastUser} ${followCore}`, 3, { requireEvidence: intent !== 'faq' });
+      const span = startSpan('rag.retrieve', { intent, contextual: ctxDep, need_evidence: intent !== 'faq' });
+      try {
+        // 省略式追问先按当前短语检索（"那退款呢"→"退款"），
+        // 命中不了再把上一句拼进来，避免上文主题盖过这一句
+        const direct = ctxDep && followCore ? followCore : core;
+        // 走 async 版本：默认内存后端等价于同步检索，配置 pgvector 时自动查库
+        retrieved = await retrieveAsync(direct, 3, { requireEvidence: intent !== 'faq' });
+        if (!retrieved.length && ctxDep && prior.lastUser && followCore) {
+          retrieved = await retrieveAsync(`${prior.lastUser} ${followCore}`, 3, { requireEvidence: intent !== 'faq' });
+        }
+        setSpanAttrs(span, { hits: retrieved.length, top_doc: retrieved[0]?.title });
+      } finally {
+        endSpan(span);
       }
       if (retrieved.length) yield { type: 'retrieval', snippets: retrieved };
     }
@@ -532,6 +605,8 @@ export async function* runAgent({ sessionId, message, confirm = false, strategy 
     model: { id: model.id, name: model.name, tier: model.tier },
     strategy: usedStrategy,
     reason,
+    planner: plannerUsed,
+    plannerModel,
   };
 
   // —— 调用（带降级；已吐出内容后不再重试，避免重复输出）——
@@ -559,15 +634,28 @@ export async function* runAgent({ sessionId, message, confirm = false, strategy 
   const t0 = Date.now();
 
   const consume = async function* (m) {
-    for await (const ev of streamModel({ model: m, messages, mockPlan })) {
-      if (ev.type === 'delta') {
-        if (firstTokenMs === null) firstTokenMs = Date.now() - t0;
-        emitted = true;
-        answerText += ev.text;
-        yield { type: 'token', text: ev.text };
-      } else if (ev.type === 'usage') {
-        usage = ev.usage;
+    const span = startSpan('model.call', { model: m.id, tier: m.tier });
+    let spanErr = null;
+    try {
+      for await (const ev of streamModel({ model: m, messages, mockPlan })) {
+        if (ev.type === 'delta') {
+          if (firstTokenMs === null) {
+            firstTokenMs = Date.now() - t0;
+            setSpanAttrs(span, { first_token_ms: firstTokenMs });
+          }
+          emitted = true;
+          answerText += ev.text;
+          yield { type: 'token', text: ev.text };
+        } else if (ev.type === 'usage') {
+          usage = ev.usage;
+        }
       }
+    } catch (err) {
+      spanErr = err;
+      throw err;
+    } finally {
+      setSpanAttrs(span, { output_chars: answerText.length });
+      endSpan(span, spanErr);
     }
   };
 

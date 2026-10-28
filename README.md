@@ -19,11 +19,15 @@
 | **智能模型路由** | 按复杂度分档 + 价格/质量/延迟/均衡策略自动选模型；内置 DeepSeek 与通义千问三档 |
 | 故障降级 | 主模型失败自动切换备用模型 + 熔断；已吐字后不重试，避免重复输出 |
 | 成本控制 | 每次调用记录模型/耗时/首字延迟/费用，后台出成本报表 |
+| **终端用户身份** | 访客令牌（HMAC 签名）；开启后会话按用户归属，别人的 sessionId 不能续聊；写操作审计记到 userId |
+| **function calling** | `PLANNER=llm` 时规则没覆盖的说法交给模型规划工具，参数经白名单校验后仍走二次确认 |
+| **向量后端可外置** | 默认内存索引；`VECTOR_STORE=pgvector` 时切块与向量存 PostgreSQL，连接失败自动回退内存 |
+| **链路追踪** | 配置 `OTEL_EXPORTER_OTLP_ENDPOINT` 即导出 OpenTelemetry span（对话/模型/工具/检索）；不配置零开销 |
 | 转人工兜底 | 说"转人工"即转接 |
 | **业务引导跳转** | 查订单/物流/退货后给出按钮，一键进入订单详情、物流轨迹、退货办理页，可直接提交 |
 | 移动 App 界面 | React 结构化前端：底部导航 + 四屏幕，切屏不丢对话，PWA 可装机 |
 | **容器化** | 后端 + 前端各一个镜像，nginx 反代含 SSE 专用配置，compose 一键起 |
-| **测试体系** | 299 项自动化测试：白盒单测 + 黑盒端到端；CI 含评测阈值门禁 |
+| **测试体系** | 327 项自动化测试：白盒单测 + 黑盒端到端；CI 含评测阈值门禁 |
 | **7×24 长稳** | 会话 LRU+TTL 回收、上游超时、SSE 心跳、优雅关闭、客户端断开即停 |
 | **高并发保护** | 全局并发上限、单 IP 限流、同会话串行锁；429 带 `FLOW_LIMIT` 原因码与 `Retry-After` |
 | **会话持久化** | 变更 2 秒内合并成一次原子快照，重启自动恢复（含待确认动作） |
@@ -746,11 +750,67 @@ curl -H "traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" h
 
 `.github/workflows/ci.yml`：每次 push / PR 跑
 
-1. `npm test` — 299 项单元 + 端到端（离线 Mock，不需要任何 Key）
+1. `npm test` — 327 项单元 + 端到端（离线 Mock，不需要任何 Key）
 2. `npm run eval:gate` — 1 万条评测 + 阈值门禁：任一分类低于阈值、执行异常、或单条平均成本超过 ¥0.01 都会让流水线失败
 3. `npm run build` — 前端构建
 
 这样"准确率悄悄掉 2%"会直接阻断合并，而不是等上线后才发现。
+
+### 12.10 终端用户身份（可选开启）
+
+默认 `USER_AUTH=off`，行为与之前完全一致。开启后：
+
+```powershell
+$env:USER_AUTH='enforce'; $env:USER_TOKEN_SECRET='<32 位以上随机串>'
+```
+
+| 能力 | 说明 |
+|---|---|
+| 签发令牌 | `POST /api/auth/guest` → `{ token, userId, expiresAt }`，HMAC-SHA256 签名，默认 24h |
+| 对话鉴权 | `/api/chat`、`/api/sessions` 必须带 `Authorization: Bearer <token>`，否则 401 |
+| 会话归属 | 会话记录 `userId`，别人的 `sessionId` 续聊返回 403，并写审计 `chat.denied` |
+| 审计可追责 | 写操作审计 actor 从 `session:xxx` 变为 `user:xxx` |
+| 兼容老会话 | 开启前创建的会话，首次带身份的访问直接认领 |
+
+接线企业身份时，把这层换成 OIDC 的 id_token 校验即可，前端仍是同一个请求头。
+
+### 12.11 OpenTelemetry 链路追踪（可选）
+
+```powershell
+$env:OTEL_EXPORTER_OTLP_ENDPOINT='http://127.0.0.1:4318'   # 留空 = 完全关闭
+docker run -d -p 16686:16686 -p 4318:4318 jaegertracing/all-in-one
+```
+
+- span 覆盖：`chat.request`（意图/模式/模型/复杂度）→ `rag.retrieve` / `tool.call` / `model.call`（首字延迟、输出长度）
+- 每个 span 带 `app.trace_id`，与 JSON 日志里的 traceId 一一对应，排障可以双向跳
+- 未配置端点时不加载 SDK，测试与离线运行零开销
+
+### 12.12 向量后端外置（可选）
+
+```powershell
+$env:VECTOR_STORE='pgvector'; $env:VECTOR_DB_URL='postgres://user:pass@127.0.0.1:5432/zhifu'
+node scripts/migrateVector.js     # 把 data/kb 里的切块灌进 PG
+```
+
+- 表 `kb_chunks` 自动创建，向量列 `vector(256)`，检索走 `<=>` 余弦距离 + HNSW 索引
+- 表名白名单校验，杜绝拼接注入
+- 连不上数据库 / 没装 `pgvector` 扩展时只告警并回退内存索引，知识库不会整体不可用
+- 默认 `memory` 后端不变：10 万级切块以内无需数据库
+
+### 12.13 模型工具规划（function calling）
+
+```powershell
+$env:PLANNER='llm'   # 默认 rules，纯规则链路
+```
+
+规则规划覆盖不了的口语说法（"SO20260001 这单现在咋样了"）会先被判成无关问题。开启后：
+
+1. 规则规划为空 + 句子里有售后领域词或订单号 → 用支持工具调用的模型规划一次
+2. 模型返回的调用必须通过白名单校验：工具必须在注册表内、参数只能来自 Schema、订单号/手机号按格式校验，非法参数直接丢弃
+3. 规划结果反推意图（order/logistics/return/refund），并走同一套缺参追问、写操作二次确认、归属校验
+4. 规划失败（上游异常、模型不支持工具）自动降级为规则链路，不向用户报错
+
+实测（DeepSeek V4.1 Flash）：`SO20260001 这单现在咋样了` → 规则判 out_of_scope，模型规划为 `queryOrder`，命中订单并正常作答，`meta.planner=llm`。
 
 ---
 

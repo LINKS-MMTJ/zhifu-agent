@@ -69,8 +69,20 @@ export async function* openaiStream({ model, messages, apiKey, tools }) {
         let json;
         try { json = JSON.parse(payload); } catch { continue; }
 
-        const delta = json.choices?.[0]?.delta?.content;
-        if (delta) yield { type: 'delta', text: delta };
+        const delta = json.choices?.[0]?.delta;
+        if (delta?.content) yield { type: 'delta', text: delta.content };
+        // function calling：工具调用是增量下发的（name 只有第一帧有，arguments 要拼接）
+        if (Array.isArray(delta?.tool_calls)) {
+          for (const part of delta.tool_calls) {
+            yield {
+              type: 'tool_call_delta',
+              index: part.index ?? 0,
+              id: part.id,
+              name: part.function?.name,
+              argsText: part.function?.arguments,
+            };
+          }
+        }
         if (json.usage) yield { type: 'usage', usage: json.usage };
       }
     }

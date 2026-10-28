@@ -5,8 +5,9 @@
 // - 没有任何索引时退回 KNOWLEDGE_DOCS，保证开箱即用
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { embed } from './embedding.js';
+import { embed, DIM } from './embedding.js';
 import { VectorStore } from './vectorStore.js';
+import { createPgVectorStore } from './store/pgvector.js';
 import { chunkText } from './ingest/chunker.js';
 import { readIndex, indexMtime, indexSizeBytes } from './ingest/indexStore.js';
 import { hasLexicalSupport } from './lexical.js';
@@ -105,6 +106,42 @@ function apply(store, next) {
   state = { ...state, ...next };
 }
 
+// —— 向量后端：默认内存；VECTOR_STORE=pgvector 时额外写入 PG 并优先走 DB 检索 ——
+// 体积大了以后内存索引会撑爆进程，外置是唯一的长期方案；
+// 但连不上 DB 时必须能回退内存，否则一次配置失误就让知识库整体不可用。
+let pgStore = null;
+let pgStatus = { backend: 'memory', reason: process.env.VECTOR_STORE === 'pgvector' ? '初始化中' : '未启用' };
+
+export function vectorBackendInfo() {
+  return { ...pgStatus, configured: process.env.VECTOR_STORE === 'pgvector' };
+}
+
+async function syncPg(items = []) {
+  if (process.env.VECTOR_STORE !== 'pgvector') return;
+  try {
+    if (!pgStore) {
+      const store = await createPgVectorStore({
+        dsn: process.env.VECTOR_DB_URL,
+        dim: DIM,
+        table: process.env.VECTOR_TABLE,
+      });
+      if (!store.ok) {
+        pgStatus = { backend: 'memory', reason: store.reason };
+        console.warn(`[kb] pgvector 不可用，继续使用内存索引：${store.reason}`);
+        return;
+      }
+      pgStore = store;
+    }
+    const n = await pgStore.upsert(items);
+    pgStatus = { backend: 'pgvector', table: pgStore.table, chunks: n };
+  } catch (err) {
+    pgStatus = { backend: 'memory', reason: err.message };
+    if (pgStore) await pgStore.close().catch(() => {});
+    pgStore = null;
+    console.warn(`[kb] pgvector 同步失败，回退内存索引：${err.message}`);
+  }
+}
+
 async function loadIndex() {
   const dir = state.indexDir;
   let loaded = null;
@@ -118,6 +155,8 @@ async function loadIndex() {
     apply(buildKnowledge(), {
       mode: 'seed', builtAt: null, mtimeMs: 0, root: null, files: [], byFormat: {}, failures: [],
     });
+    // 种子文档同样同步一份到 PG，保证两种后端结果一致
+    syncPg(kbStore.items).catch(() => {});
     return false;
   }
 
@@ -131,6 +170,8 @@ async function loadIndex() {
     byFormat: m.byFormat || {},
     failures: m.failures || [],
   });
+  // 索引变了就把新切块刷进 PG（后台执行，不阻塞热加载）
+  syncPg(kbStore.items).catch(() => {});
   return true;
 }
 
@@ -150,6 +191,7 @@ export function knowledgeInfo() {
     indexBytes: indexSizeBytes(state.indexDir),
     byFormat: state.byFormat,
     failures: state.failures,
+    vectorBackend: vectorBackendInfo(),
     sources: state.mode === 'index'
       ? state.files.map((f) => ({ path: f.path, title: f.title, format: f.format, chunks: f.chunks, size: f.size }))
       : KNOWLEDGE_DOCS.map((d) => ({ path: d.id, title: d.title, format: 'seed', chunks: 1, size: d.content.length })),
@@ -192,14 +234,9 @@ function resolveDocLimit(store) {
   return Math.min(512, Math.max(64, Math.ceil(docs * 0.05)));
 }
 
-// 从指定 store 检索，便于测试与多知识库场景
-export function retrieveFrom(store, query, k = 3, {
-  minScore = 0.12, format = null, docLimit, requireEvidence = false,
-} = {}) {
-  const qv = embed(query);
-  const filter = format ? (it) => it.format === format : null;
-  const hits = store
-    .search(qv, k, { filter, docLimit: docLimit ?? resolveDocLimit(store) })
+// 命中结果的后处理：分数过滤、引用章节、词面闸门
+function postProcess(hits, query, { minScore = 0.12, requireEvidence = false } = {}) {
+  const kept = hits
     .filter((r) => r.score > minScore)
     .map(({ vector, ...rest }) => {
       // 引用展示到"章节"一级，便于用户核对出处
@@ -209,12 +246,39 @@ export function retrieveFrom(store, query, k = 3, {
     });
 
   // 词面闸门：向量相似但字面完全对不上，多半是无关问题蹭到了常用字
-  if (requireEvidence && hits.length && !hasLexicalSupport(query, hits)) return [];
-  return hits;
+  if (requireEvidence && kept.length && !hasLexicalSupport(query, kept)) return [];
+  return kept;
+}
+
+export function retrieveFrom(store, query, k = 3, {
+  minScore = 0.12, format = null, docLimit, requireEvidence = false,
+} = {}) {
+  // 从指定 store 检索，便于测试与多知识库场景
+  const qv = embed(query);
+  const filter = format ? (it) => it.format === format : null;
+  const hits = store.search(qv, k, { filter, docLimit: docLimit ?? resolveDocLimit(store) });
+  return postProcess(hits, query, { minScore, requireEvidence });
 }
 
 export function retrieve(query, k = 3, opts = {}) {
   // 后台检查索引更新，不阻塞本次检索
   checkForUpdates().catch(() => {});
   return retrieveFrom(kbStore, query, k, opts);
+}
+
+/**
+ * 异步检索：pgvector 可用时走数据库，否则回退内存索引。
+ * 返回结构与 retrieve 完全一致，调用方不需要区分后端。
+ */
+export async function retrieveAsync(query, k = 3, opts = {}) {
+  checkForUpdates().catch(() => {});
+  if (!pgStore) return retrieveFrom(kbStore, query, k, opts);
+  try {
+    // 多取一些再过滤：DB 侧无法套用词面闸门，留给 postProcess 处理
+    const hits = await pgStore.search(embed(query), Math.max(k * 3, k), { format: opts.format || null });
+    return postProcess(hits, query, opts);
+  } catch (err) {
+    console.warn(`[kb] pgvector 检索失败，回退内存索引：${err.message}`);
+    return retrieveFrom(kbStore, query, k, opts);
+  }
 }

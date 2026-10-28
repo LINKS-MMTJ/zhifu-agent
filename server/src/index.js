@@ -12,6 +12,7 @@ import { listTools } from './tools/registry.js';
 import { validateEnv } from './config/env.js';
 import { initPersistence } from './store/persistence.js';
 import { initAudit, flushAudit, auditEnabled } from './observability/audit.js';
+import { initOtel, shutdownOtel } from './observability/otel.js';
 import { logInfo, logWarn, logError } from './observability/logger.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -40,6 +41,11 @@ const restored = await restoreSessions();
 
 // —— 3. 连接器与 HTTP 服务 ——
 initIntegrations();
+// 未配置 OTEL_EXPORTER_OTLP_ENDPOINT 时直接跳过，不影响启动与测试
+const otelOn = await initOtel();
+if (otelOn) {
+  console.log(`[zhifu-agent] OpenTelemetry 已启用 → ${process.env.OTEL_EXPORTER_OTLP_ENDPOINT}`);
+}
 const app = createApp();
 const server = app.listen(PORT, () => {
   const kb = knowledgeInfo();
@@ -87,6 +93,8 @@ function shutdown(signal) {
     await Promise.all([flushSessions(), flushAudit()]).catch((err) => {
       console.warn(`[zhifu-agent] 关闭前落盘失败：${err.message}`);
     });
+    // 把还没导出的 span 刷出去，避免链路缺尾
+    await shutdownOtel().catch(() => {});
     console.log(`[zhifu-agent] 已优雅退出（会话 ${storeStats().sessions} 个已落盘）`);
     process.exit(0);
   });
