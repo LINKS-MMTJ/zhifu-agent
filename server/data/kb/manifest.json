@@ -1,0 +1,196 @@
+{
+  "root": "C:\\Users\\ZhuanZ1\\Desktop\\桌面2\\课程\\trea\\客服 Agent\\server\\knowledge",
+  "chunker": {
+    "maxChars": 480,
+    "overlapChars": 80
+  },
+  "counts": {
+    "files": 16,
+    "chunks": 107,
+    "chars": 99
+  },
+  "byFormat": {
+    "markdown": {
+      "files": 6,
+      "chunks": 30
+    },
+    "word": {
+      "files": 3,
+      "chunks": 13
+    },
+    "pdf": {
+      "files": 2,
+      "chunks": 14
+    },
+    "csv": {
+      "files": 1,
+      "chunks": 1
+    },
+    "excel": {
+      "files": 1,
+      "chunks": 2
+    },
+    "ppt": {
+      "files": 1,
+      "chunks": 16
+    },
+    "json": {
+      "files": 1,
+      "chunks": 21
+    },
+    "html": {
+      "files": 1,
+      "chunks": 10
+    }
+  },
+  "failures": [],
+  "files": [
+    {
+      "path": "01-政策制度/发票与开票规则.md",
+      "size": 857,
+      "mtimeMs": 1793111285375,
+      "hash": "9474a04a3132be59762e72592e0b7f4790574a9b",
+      "format": "markdown",
+      "title": "发票与开票规则",
+      "chunks": 5
+    },
+    {
+      "path": "01-政策制度/换货与维修政策.md",
+      "size": 1350,
+      "mtimeMs": 1793111285370,
+      "hash": "80995751384a5d12e5e51a8a355d6a72d84f4653",
+      "format": "markdown",
+      "title": "换货与维修政策",
+      "chunks": 6
+    },
+    {
+      "path": "01-政策制度/价格保护规则.md",
+      "size": 866,
+      "mtimeMs": 1793111285373,
+      "hash": "cea1489c7a0a589b17ee7570a2e05ad0e9fa902c",
+      "format": "markdown",
+      "title": "价格保护规则",
+      "chunks": 4
+    },
+    {
+      "path": "01-政策制度/退货退款总则.md",
+      "size": 2171,
+      "mtimeMs": 1793111285369,
+      "hash": "9546a83dc07c634239f29b2a83f247e29a361d5e",
+      "format": "markdown",
+      "title": "退货退款总则",
+      "chunks": 8
+    },
+    {
+      "path": "02-品类规则/服饰鞋包类售后规则.docx",
+      "size": 10222,
+      "mtimeMs": 1793111285492,
+      "hash": "1eebda632fea8a03221c72fcb181715126ad0c9b",
+      "format": "word",
+      "title": "服饰鞋包类售后规则",
+      "chunks": 4
+    },
+    {
+      "path": "02-品类规则/家电类售后规则.docx",
+      "size": 10369,
+      "mtimeMs": 1793111285452,
+      "hash": "982381c46d7c51c62e574dac085353df43691776",
+      "format": "word",
+      "title": "家电类售后规则",
+      "chunks": 4
+    },
+    {
+      "path": "02-品类规则/数码类售后规则.docx",
+      "size": 10287,
+      "mtimeMs": 1793111285533,
+      "hash": "b1fb9675422911888e0bef6fc5a75081c24be81a",
+      "format": "word",
+      "title": "数码类售后规则",
+      "chunks": 5
+    },
+    {
+      "path": "03-操作手册/工单与升级流程.pdf",
+      "size": 26041,
+      "mtimeMs": 1793111285761,
+      "hash": "b8cb6b250b1a8638badf1c54cbd22bb14b2c792c",
+      "format": "pdf",
+      "title": "工单与升级流程",
+      "chunks": 6
+    },
+    {
+      "path": "03-操作手册/客服话术手册.pdf",
+      "size": 35597,
+      "mtimeMs": 1793111285675,
+      "hash": "202bb7c0c7ccb2fb46ed759e517f90e7156c6c49",
+      "format": "pdf",
+      "title": "客服话术手册",
+      "chunks": 8
+    },
+    {
+      "path": "04-数据表格/售后原因分类.csv",
+      "size": 760,
+      "mtimeMs": 1793111285814,
+      "hash": "f3e1d836da2decfb2cb9fe4aa431f397287d18be",
+      "format": "csv",
+      "title": "售后原因分类",
+      "chunks": 1
+    },
+    {
+      "path": "04-数据表格/运费与时效标准.xlsx",
+      "size": 19421,
+      "mtimeMs": 1793111285810,
+      "hash": "89f50c23004b56476a360b3ae3e082da0fca33ab",
+      "format": "excel",
+      "title": "运费与时效标准",
+      "chunks": 2
+    },
+    {
+      "path": "05-培训材料/新客服入职培训.pptx",
+      "size": 100277,
+      "mtimeMs": 1793111285883,
+      "hash": "795a9cb955f7bae21837f14890a8301b482ed25a",
+      "format": "ppt",
+      "title": "新客服入职培训",
+      "chunks": 16
+    },
+    {
+      "path": "06-FAQ/常见问题.json",
+      "size": 3895,
+      "mtimeMs": 1793111285887,
+      "hash": "6d151ebe4e269d4382e789c90b409e7a93f7f734",
+      "format": "json",
+      "title": "常见问题",
+      "chunks": 21
+    },
+    {
+      "path": "06-FAQ/大促期间特别说明.md",
+      "size": 796,
+      "mtimeMs": 1793111285376,
+      "hash": "6ba8c66c89826ea1b456ad22b552b90cdd8e2e8f",
+      "format": "markdown",
+      "title": "大促期间售后特别说明",
+      "chunks": 5
+    },
+    {
+      "path": "07-网页导出/帮助中心-售后常见问题.html",
+      "size": 1958,
+      "mtimeMs": 1793111285890,
+      "hash": "b2eaa863d9115d8c6aa153a6d4156edece15edf9",
+      "format": "html",
+      "title": "帮助中心 · 售后服务常见问题",
+      "chunks": 10
+    },
+    {
+      "path": "uploads/kb-ui-test.md",
+      "size": 254,
+      "mtimeMs": 1793162306661,
+      "hash": "4c3dca687fe392f8fccdad428dc9379c78b813b8",
+      "format": "markdown",
+      "title": "上门取件说明",
+      "chunks": 2
+    }
+  ],
+  "version": 3,
+  "builtAt": "2026-10-28T04:38:26.813Z",
+  "chunks": 107
+}

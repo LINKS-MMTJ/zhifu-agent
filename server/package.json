@@ -1,0 +1,37 @@
+{
+  "name": "zhifu-agent-server",
+  "version": "1.0.0",
+  "description": "智服 Agent 后端：Agent 编排 + 智能模型路由 + RAG + 工具调用",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/index.js",
+    "dev": "node --env-file-if-exists=.env --watch src/index.js",
+    "test": "node --test",
+    "ingest": "node scripts/ingest.js",
+    "ingest:force": "node scripts/ingest.js --force",
+    "gen:corpus": "node bench/genCorpus.js",
+    "bench": "node bench/loadtest.js",
+    "bench:soak": "node bench/loadtest.js --concurrency 50 --duration 300",
+    "bench:kb": "node bench/kbScale.js",
+    "eval": "node --env-file-if-exists=.env eval/runEval.js",
+    "eval:gate": "node eval/runEval.js && node eval/checkThreshold.js",
+    "judge": "node --env-file-if-exists=.env eval/deepseekJudge.js",
+    "soak": "node bench/userSim.js --hours 10 --gap 2000 --session-pool 200 --port 4001",
+    "soak:short": "node bench/userSim.js --minutes 5 --port 4001",
+    "soak:report": "node scripts/soakReport.js --port 4001"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "jszip": "^3.10.2",
+    "mammoth": "^1.13.0",
+    "pdfjs-dist": "^6.4.299",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "docx": "^9.15.0",
+    "pdfkit": "^0.20.2",
+    "pptxgenjs": "^4.0.1"
+  }
+}

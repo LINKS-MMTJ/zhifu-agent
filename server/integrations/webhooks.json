@@ -1,0 +1,10 @@
+{
+  "subscribers": [
+    {
+      "id": "crm-events",
+      "url": "${CRM_BASE_URL}/events",
+      "secretEnv": "WEBHOOK_SECRET",
+      "events": ["tool.executed", "tool.failed", "handoff.requested", "answer.completed"]
+    }
+  ]
+}

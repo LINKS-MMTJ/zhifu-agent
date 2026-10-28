@@ -1,0 +1,88 @@
+# 智服 Agent 一键启动（容器化）
+# 用法：
+#   docker compose up -d --build          启动
+#   docker compose logs -f                看日志
+#   docker compose down                   停止
+#
+# 接入真实模型：在项目根目录创建 .env，写入 DEEPSEEK_API_KEY=sk-xxx
+# 必须设置 ADMIN_TOKEN（生产模式下缺失会拒绝启动）
+# 未配置模型 Key 时会自动以离线 Mock 模式运行，功能完整可演示
+#
+# 高并发相关：
+#   MAX_CONCURRENT        单实例最大在途请求，超限返回 429（保护事件循环与上游连接）
+#   RATE_LIMIT_PER_MIN    单 IP 每分钟请求上限
+#   MAX_SESSIONS          内存会话上限，超出按 LRU 淘汰（7×24 必需）
+#   SESSION_TTL_MS        会话空闲过期时间
+#   UPSTREAM_TIMEOUT_MS   上游模型空闲超时
+# 水平扩容：docker compose up -d --scale server=3
+#   （nginx 已配置 proxy_next_upstream，配合 compose 内部 DNS 轮询可分散流量）
+#   注意：多副本时不要共享 zhifu-data 卷，会话快照是"单实例最后写入为准"；
+#         多副本应把 store/persistence.js 换成 Redis/数据库。
+
+services:
+  server:
+    build: ./server
+    # 不设 container_name，才能用 --scale 水平扩容
+    environment:
+      NODE_ENV: production
+      PORT: "4000"
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      # :? 语法让 compose 在缺省时直接报错退出，而不是容器起来后反复重启
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?请在 .env 中设置 ADMIN_TOKEN（至少 16 位随机串）}
+      DATA_DIR: /app/data
+      DAILY_COST_LIMIT: ${DAILY_COST_LIMIT:-0}
+      DAILY_COST_SOFT_RATIO: ${DAILY_COST_SOFT_RATIO:-0.8}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      MODERATION_BLOCKLIST: ${MODERATION_BLOCKLIST:-}
+      CRM_BASE_URL: ${CRM_BASE_URL:-}
+      CRM_TOKEN: ${CRM_TOKEN:-}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+      INBOUND_WEBHOOK_SECRET: ${INBOUND_WEBHOOK_SECRET:-}
+      MAX_CONCURRENT: ${MAX_CONCURRENT:-128}
+      RATE_LIMIT_PER_MIN: ${RATE_LIMIT_PER_MIN:-600}
+      MAX_SESSIONS: ${MAX_SESSIONS:-5000}
+      SESSION_TTL_MS: ${SESSION_TTL_MS:-7200000}
+      UPSTREAM_TIMEOUT_MS: ${UPSTREAM_TIMEOUT_MS:-60000}
+      SSE_HEARTBEAT_MS: ${SSE_HEARTBEAT_MS:-15000}
+    ports:
+      - "4000:4000"
+    volumes:
+      # 会话快照与审计日志落在命名卷里，容器重建不丢
+      - zhifu-data:/app/data
+      # 页面上传的知识文档单独挂卷：镜像里自带示例语料，上传的新文件要能持久化
+      - zhifu-knowledge:/app/knowledge/uploads
+    restart: unless-stopped
+    # 优雅停止：给在途 SSE 请求留出收尾时间
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+        reservations:
+          memory: 256M
+
+  web:
+    build: ./web
+    depends_on:
+      server:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
+
+volumes:
+  zhifu-data:
+  zhifu-knowledge:

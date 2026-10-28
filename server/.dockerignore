@@ -1,0 +1,7 @@
+node_modules
+test
+bench
+eval
+data
+*.log
+.env
