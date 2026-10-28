@@ -97,7 +97,8 @@ for (let i = 0; i < 3000; i++) {
 }
 
 const out = join(__dirname, 'testset.json');
-writeFileSync(out, JSON.stringify(cases, null, 0));
+// 每个字段单独一行：单行 JSON 没法 diff、没法抽查，出问题只能整文件比对
+writeFileSync(out, JSON.stringify(cases, null, 1));
 const stat = cases.reduce((a, c) => (a[c.category] = (a[c.category] || 0) + 1, a), {});
 console.log(`已生成 ${cases.length} 条测试用例 -> ${out}`);
 console.log(JSON.stringify(stat, null, 2));

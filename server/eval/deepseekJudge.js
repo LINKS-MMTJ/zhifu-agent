@@ -126,7 +126,9 @@ async function main() {
   };
 
   const input = path.resolve(ROOT, String(get('in', 'data/soak/run-latest.jsonl')));
-  const sampleSize = Number(get('sample', 50));
+  // 默认抽 100 条：5 条的量级支撑不了任何结论，100 条才有基本的置信度
+  const sampleSize = Number(get('sample', 100));
+  const seed = Number(get('seed', 42));
   const outDir = path.dirname(input);
 
   if (!fs.existsSync(input)) {
@@ -138,8 +140,8 @@ async function main() {
     .map((l) => { try { return JSON.parse(l); } catch { return null; } })
     .filter(Boolean);
 
-  const items = sampleN(all, Math.min(sampleSize, all.length));
-  console.log(`[judge] 共 ${all.length} 条，抽样 ${items.length} 条交 DeepSeek 评分（模型 ${MODEL}）`);
+  const items = sampleN(all, Math.min(sampleSize, all.length), seed);
+  console.log(`[judge] 共 ${all.length} 条，按 seed=${seed} 抽样 ${items.length} 条交 DeepSeek 评分（模型 ${MODEL}）`);
 
   const results = [];
   for (let i = 0; i < items.length; i++) {

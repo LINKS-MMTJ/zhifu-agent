@@ -619,6 +619,8 @@ node eval/runEval.js           # 全量跑 Agent + 规则打分（EVAL_FAST 自�
 node eval/judgePrompts.js      # 生成 DeepSeek 评委提示词（非业务题抽样）
 ```
 
+抽样全程固定种子（`EVAL_SEED` 与 `--seed`，默认 42）：同一份测试集重跑得到同一批评委样本，「修复前 / 修复后」可以逐条对齐；测试集本身也是逐字段换行的 JSON，可 diff、可抽查。
+
 **结果概要**：
 
 | 类别 | 数量 | 通过率 |
@@ -672,6 +674,7 @@ node eval/judgePrompts.js      # 生成 DeepSeek 评委提示词（非业务题�
 |---|---|---|
 | `chat.completed` | 每轮回答结束 | 模式、意图、模型、策略、成本、首字/总耗时、工具列表、检索条数 |
 | `tool.call` | 工具 API 调用 | 工具名、只读与否、来源、结果；**只记参数名不记参数值** |
+| `tool.write` | 对话内写操作 | 工具名、订单号、幂等键、结果（ok/rejected/expired/denied/duplicate）与是否经过手机号核验 |
 | `admin.strategy` | 改路由策略 | 变更前后取值 |
 | `auth.denied` | 管理接口 401 | 来源 IP、路径 |
 

@@ -1,6 +1,5 @@
 // 运营屏幕：路由策略切换 + 模型注册表 + 成本报表 + 调用日志 + 外部集成
 import React, { useState } from 'react';
-import { useApp } from '../../context/AppContext.jsx';
 import { useAdmin } from '../../hooks/useAdmin.js';
 import { postJSON, getAdminToken, setAdminToken } from '../../api.js';
 
@@ -13,14 +12,13 @@ const STRATEGIES = [
 ];
 
 export default function AdminScreen() {
-  const { setStrategy: setCtxStrategy } = useApp();
   const { models, strategy, cost, logs, integrations, loading, error, reload } = useAdmin();
   const [token, setToken] = useState(getAdminToken());
 
   const changeStrategy = async (s) => {
     try {
-      const r = await postJSON('/api/admin/strategy', { strategy: s });
-      setCtxStrategy(r.strategy);
+      // 改完直接以服务端返回为准刷新，前端不再另存一份策略状态
+      await postJSON('/api/admin/strategy', { strategy: s });
     } catch {
       // 401 时下方会提示输入令牌
     }

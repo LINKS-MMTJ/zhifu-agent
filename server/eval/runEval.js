@@ -12,6 +12,9 @@ import { resetSessions } from '../src/store/sessions.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const JUDGE_SAMPLE_SIZE = Number(process.env.JUDGE_SAMPLE || 300);
+// 抽样固定种子：同一份测试集重跑会得到同一批评委样本，
+// "修复前 / 修复后"才能逐条对齐，而不是每次换一批题
+const EVAL_SEED = Number(process.env.EVAL_SEED || 42);
 
 // —— 消费一轮 Agent，收集事件 ——
 async function runOne(sessionId, message, confirm = false) {
@@ -114,7 +117,7 @@ async function main() {
   }
 
   // —— 抽取非业务样本供 DeepSeek 评委 ——
-  const sample = sampleN(nonbusinessResults, JUDGE_SAMPLE_SIZE);
+  const sample = sampleN(nonbusinessResults, JUDGE_SAMPLE_SIZE, EVAL_SEED);
   writeFileSync(join(__dirname, 'judge_sample.json'), JSON.stringify(sample, null, 1));
 
   // —— 写明细（非业务全量，便于复查；业务只记统计）——
@@ -127,13 +130,22 @@ async function main() {
   console.log(`\n非业务样本已抽取 ${sample.length} 条 -> eval/judge_sample.json（供 DeepSeek 评委打分）`);
 }
 
-function sampleN(arr, n) {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
+// 固定种子的洗牌（mulberry32）：同样的输入与种子必得同样的样本
+function sampleN(arr, n, seed = 42) {
+  let a = seed >>> 0;
+  const rand = () => {
+    a += 0x6D2B79F5;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const copy = [...arr];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
   }
-  return a.slice(0, n);
+  return copy.slice(0, n);
 }
 
 function buildReport(stats, sampleSize, nbTotal, elapsed) {
@@ -167,7 +179,7 @@ function buildReport(stats, sampleSize, nbTotal, elapsed) {
   }
   lines.push('');
   lines.push(`## 非业务题（DeepSeek 评委）`);
-  lines.push(`- 非业务总数 ${nbTotal}，已随机抽取 **${sampleSize}** 条待 DeepSeek 网页版打分（judge_sample.json）。`);
+  lines.push(`- 非业务总数 ${nbTotal}，已按固定种子（seed=${EVAL_SEED}）抽取 **${sampleSize}** 条待 DeepSeek 网页版打分（judge_sample.json），重跑样本一致。`);
   return lines.join('\n');
 }
 

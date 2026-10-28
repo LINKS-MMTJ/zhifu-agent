@@ -207,7 +207,9 @@ function planTools(intent, text, carriedOrderId = null, carriedPhone = null) {
  */
 export async function* runAgent({ sessionId, message, confirm = false, strategy }) {
   const session = getSession(sessionId);
-  if (strategy) session.strategy = strategy;
+  // 策略只有两个来源：管理端设置的全局默认（router.strategy）与本请求的显式覆盖。
+  // 不再写回会话——否则会话里会留下一份界面上看不见的"第二真相"，和运营页显示的对不上。
+  const strategyOverride = strategy || null;
 
   // 取最近几轮作为上下文（当前消息尚未写入）
   // 超出窗口的旧消息不再直接丢弃，而是压成一段摘要带进系统提示，
@@ -520,7 +522,7 @@ export async function* runAgent({ sessionId, message, confirm = false, strategy 
   });
 
   // —— 智能模型路由 ——
-  const { model, strategy: usedStrategy, reason, fallbacks } = router.select(complexity.level, session.strategy);
+  const { model, strategy: usedStrategy, reason, fallbacks } = router.select(complexity.level, strategyOverride);
   yield {
     type: 'meta',
     intent,

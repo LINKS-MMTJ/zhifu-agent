@@ -40,7 +40,6 @@ export async function snapshotSessionsNow() {
     id: s.id,
     createdAt: s.createdAt,
     lastAccess: s.lastAccess,
-    strategy: s.strategy,
     pendingAction: s.pendingAction || null,
     messages: s.messages,
   }));
@@ -67,7 +66,6 @@ export async function restoreSessions() {
       lastAccess: s.lastAccess || now,
       messages: s.messages.slice(-200),
       pendingAction: s.pendingAction || null,
-      strategy: s.strategy || 'auto',
     });
   }
   return { restored: alive.length, skipped: data.sessions.length - alive.length };
@@ -93,7 +91,7 @@ function touch(session) {
 export function getSession(id) {
   let s = sessions.get(id);
   if (!s) {
-    s = { id, createdAt: Date.now(), lastAccess: Date.now(), messages: [], pendingAction: null, strategy: 'auto' };
+    s = { id, createdAt: Date.now(), lastAccess: Date.now(), messages: [], pendingAction: null };
     sessions.set(id, s);
     if (sessions.size > MAX_SESSIONS) {
       // 淘汰最久未访问的一个

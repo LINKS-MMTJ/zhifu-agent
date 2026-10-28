@@ -45,8 +45,7 @@ test('会话恢复: 快照后重启可恢复消息与待确认动作', async () 
   const s = getSession('s-restore');
   addMessage('s-restore', { role: 'user', content: '我要退货' });
   addMessage('s-restore', { role: 'assistant', content: '请提供订单号' });
-  s.pendingAction = { tool: 'createReturn', args: { orderId: 'SO20260001' } };
-  s.strategy = 'quality';
+  s.pendingAction = { tool: 'createReturn', args: { orderId: 'SO20260001' }, at: Date.now(), idem: 'idem-1' };
 
   assert.equal(await snapshotSessionsNow(), true);
 
@@ -59,7 +58,9 @@ test('会话恢复: 快照后重启可恢复消息与待确认动作', async () 
   assert.equal(back.messages.length, 2);
   assert.equal(back.messages[0].content, '我要退货');
   assert.equal(back.pendingAction.tool, 'createReturn');
-  assert.equal(back.strategy, 'quality');
+  assert.equal(back.pendingAction.idem, 'idem-1');
+  // 路由策略不再存在会话里：唯一真相在 router.strategy
+  assert.equal(back.strategy, undefined);
 
   resetSessions();
   resetPersistenceForTest();
