@@ -187,7 +187,17 @@ export async function* runAgent({ sessionId, message, confirm = false, strategy 
   if (strategy) session.strategy = strategy;
 
   // 取最近几轮作为上下文（当前消息尚未写入）
-  const history = session.messages.slice(-6).map((m) => ({ role: m.role, content: m.content }));
+  // 超出窗口的旧消息不再直接丢弃，而是压成一段摘要带进系统提示，
+  // 否则长对话里"我前面说过订单号""刚才说不要发票"这类信息会凭空消失
+  const HISTORY_KEEP = 8;
+  const recent = session.messages.slice(-HISTORY_KEEP);
+  const older = session.messages.slice(0, -HISTORY_KEEP).slice(-16);
+  const historySummary = older.length
+    ? older
+      .map((m) => `${m.role === 'user' ? '用户' : '客服'}：${String(m.content || '').replace(/\s+/g, ' ').slice(0, 50)}`)
+      .join('；')
+    : '';
+  const history = recent.map((m) => ({ role: m.role, content: m.content }));
   // 上一轮在聊什么：省略句全靠它补齐
   const prior = readContext(session.messages);
   const ctxDep = isContextDependent(message);
@@ -432,7 +442,7 @@ export async function* runAgent({ sessionId, message, confirm = false, strategy 
     },
     promptTokens: 90 + retrieved.length * 30,
   };
-  const messages = buildMessages({ mode, message, retrieved, toolResults, history });
+  const messages = buildMessages({ mode, message, retrieved, toolResults, history, historySummary });
 
   let usedModel = model;
   let usage = null;

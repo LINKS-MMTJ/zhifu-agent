@@ -23,15 +23,18 @@
   },
   "dependencies": {
     "cors": "^2.8.5",
+    "exceljs": "^4.4.0",
     "express": "^4.19.2",
     "jszip": "^3.10.2",
     "mammoth": "^1.13.0",
-    "pdfjs-dist": "^6.4.299",
-    "xlsx": "^0.18.5"
+    "pdfjs-dist": "^6.4.299"
   },
   "devDependencies": {
     "docx": "^9.15.0",
     "pdfkit": "^0.20.2",
     "pptxgenjs": "^4.0.1"
+  },
+  "overrides": {
+    "uuid": "^11.1.1"
   }
 }

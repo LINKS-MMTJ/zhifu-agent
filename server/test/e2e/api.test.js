@@ -23,10 +23,16 @@ test('GET /api/health 返回健康状态', async () => {
   assert.ok(d.models >= 1);
 });
 
-test('GET /api/knowledge 返回文档与切块数', async () => {
+test('GET /api/knowledge 公开接口只给规模统计，不暴露文档清单', async () => {
   const d = await (await get('/api/knowledge')).json();
-  assert.ok(d.docs.length >= 6);
+  assert.ok(d.docsCount >= 6);
   assert.ok(d.chunks >= 6);
+  assert.equal(d.docs, undefined, '文档清单属于内部信息，不应出现在公开接口');
+});
+
+test('GET /api/knowledge 管理接口返回完整文档清单', async () => {
+  const d = await (await get('/api/admin/knowledge')).json();
+  assert.ok(d.docs.length >= 6);
   assert.ok(d.docs[0].content.length > 0);
 });
 

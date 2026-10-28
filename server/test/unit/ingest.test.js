@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
 import { ingestKnowledge, scanFiles } from '../../src/rag/ingest/pipeline.js';
 import { readIndex, readManifest, indexExists, encodeVector, decodeVector, INDEX_VERSION } from '../../src/rag/ingest/indexStore.js';
 import { DIM } from '../../src/rag/embedding.js';
@@ -20,17 +20,17 @@ function writeFile(root, rel, content) {
   return p;
 }
 
-function buildCorpus() {
+async function buildCorpus() {
   const src = mkTmp('kb-src-');
   writeFile(src, '01-政策/退货政策.md', '# 七天无理由退货\n\n自签收之日起 7 天内可申请无理由退货。\n\n## 运费\n\n无理由退货运费由买家承担。\n');
   writeFile(src, '01-政策/发票政策.md', '# 发票规则\n\n订单完成后可申请电子发票。\n');
   writeFile(src, '02-帮助/帮助中心.html', '<html><head><title>帮助中心</title></head><body><h1>售后帮助</h1><p>退款 1-7 个工作日到账。</p></body></html>');
   writeFile(src, '03-FAQ/常见问题.json', JSON.stringify({ items: [{ q: '运费谁出', a: '买家承担' }, { q: '多久到账', a: '1-7 个工作日' }] }));
 
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['区域', '首重'], ['江浙沪', 6]]), '运费');
+  const wb = new ExcelJS.Workbook();
+  wb.addWorksheet('运费').addRows([['区域', '首重'], ['江浙沪', 6]]);
   fs.mkdirSync(path.join(src, '04-表格'), { recursive: true });
-  fs.writeFileSync(path.join(src, '04-表格/运费标准.xlsx'), XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }));
+  fs.writeFileSync(path.join(src, '04-表格/运费标准.xlsx'), Buffer.from(await wb.xlsx.writeBuffer()));
 
   writeFile(src, '05-忽略/图片说明.exe', 'not supported');
   writeFile(src, '05-忽略/空文件.txt', '');
@@ -38,7 +38,7 @@ function buildCorpus() {
 }
 
 test('入库: 扫描只收集受支持且非空的文件', async () => {
-  const src = buildCorpus();
+  const src = await buildCorpus();
   const files = await scanFiles(src, {});
   const names = files.map((f) => f.rel);
   assert.equal(files.length, 5);
@@ -48,7 +48,7 @@ test('入库: 扫描只收集受支持且非空的文件', async () => {
 });
 
 test('入库: 生成可读索引与 manifest', async () => {
-  const src = buildCorpus();
+  const src = await buildCorpus();
   const out = mkTmp('kb-out-');
   const stats = await ingestKnowledge({ root: src, outDir: out });
 
@@ -89,7 +89,7 @@ test('入库: 浮点向量写入时自动量化到 int8 范围', () => {
 });
 
 test('入库: 二次运行全部命中增量，不重新解析', async () => {
-  const src = buildCorpus();
+  const src = await buildCorpus();
   const out = mkTmp('kb-out-');
   const first = await ingestKnowledge({ root: src, outDir: out });
   const second = await ingestKnowledge({ root: src, outDir: out });
@@ -100,7 +100,7 @@ test('入库: 二次运行全部命中增量，不重新解析', async () => {
 });
 
 test('入库: 只重新解析被修改的文件', async () => {
-  const src = buildCorpus();
+  const src = await buildCorpus();
   const out = mkTmp('kb-out-');
   await ingestKnowledge({ root: src, outDir: out });
 
@@ -115,7 +115,7 @@ test('入库: 只重新解析被修改的文件', async () => {
 });
 
 test('入库: 删除源文件后索引不再包含它', async () => {
-  const src = buildCorpus();
+  const src = await buildCorpus();
   const out = mkTmp('kb-out-');
   await ingestKnowledge({ root: src, outDir: out });
 
@@ -128,7 +128,7 @@ test('入库: 删除源文件后索引不再包含它', async () => {
 });
 
 test('入库: 单个坏文件只记录失败，不影响整批', async () => {
-  const src = buildCorpus();
+  const src = await buildCorpus();
   const out = mkTmp('kb-out-');
   fs.writeFileSync(path.join(src, '02-帮助/坏文档.docx'), Buffer.from('not a zip'));
 
@@ -139,14 +139,14 @@ test('入库: 单个坏文件只记录失败，不影响整批', async () => {
 });
 
 test('入库: 超过大小上限的文件被跳过', async () => {
-  const src = buildCorpus();
+  const src = await buildCorpus();
   const files = await scanFiles(src, { maxFileSize: 200 });
   assert.ok(files.length < 5, `应过滤掉大文件，实际 ${files.length}`);
   assert.ok(files.every((f) => f.size <= 200));
 });
 
 test('入库: force 模式忽略增量全部重解析', async () => {
-  const src = buildCorpus();
+  const src = await buildCorpus();
   const out = mkTmp('kb-out-');
   await ingestKnowledge({ root: src, outDir: out });
   const stats = await ingestKnowledge({ root: src, outDir: out, force: true });

@@ -6,12 +6,12 @@ import path from 'node:path';
 import { Document, Packer, Paragraph, HeadingLevel, TextRun } from 'docx';
 import pptxgen from 'pptxgenjs';
 import PDFDocument from 'pdfkit';
-import XLSX from 'xlsx';
-import { loadDocument, getLoader, SUPPORTED_EXT } from '../../src/rag/ingest/loaders/index.js';
+import ExcelJS from 'exceljs';
+import { loadDocument, getLoader, SUPPORTED_EXT, LEGACY_EXT } from '../../src/rag/ingest/loaders/index.js';
 import { decodeText, htmlToText } from '../../src/rag/ingest/loaders/text.js';
 
 test('解析器: 支持的扩展名覆盖常见企业文档', () => {
-  for (const ext of ['.txt', '.md', '.html', '.json', '.docx', '.pdf', '.xlsx', '.xls', '.csv', '.pptx']) {
+  for (const ext of ['.txt', '.md', '.html', '.json', '.docx', '.pdf', '.xlsx', '.csv', '.pptx']) {
     assert.ok(SUPPORTED_EXT.includes(ext), `缺少 ${ext}`);
     assert.equal(typeof getLoader(ext), 'function');
   }
@@ -87,20 +87,27 @@ test('解析器: Word 保留标题与正文', async () => {
 });
 
 test('解析器: Excel 按工作表输出且保留表头', async () => {
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+  const wb = new ExcelJS.Workbook();
+  wb.addWorksheet('运费标准').addRows([
     ['区域', '首重', '续重'],
     ['江浙沪皖', 6, 2],
     ['京津冀', 8, 3],
-  ]), '运费标准');
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['区域', '时效'], ['江浙沪', '24小时']]), '时效承诺');
-  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  ]);
+  wb.addWorksheet('时效承诺').addRows([['区域', '时效'], ['江浙沪', '24小时']]);
+  const buf = Buffer.from(await wb.xlsx.writeBuffer());
 
   const out = await loadDocument(buf, { ext: '.xlsx' });
   assert.ok(out.text.includes('工作表：运费标准'));
   assert.ok(out.text.includes('工作表：时效承诺'));
   assert.ok(out.text.includes('江浙沪皖 | 6 | 2'));
   assert.equal(out.meta.sheets, 2);
+});
+
+test('解析器: 老格式 .xls 不再解析，但给出可操作的提示', async () => {
+  assert.equal(getLoader('.xls'), null);
+  assert.ok(!SUPPORTED_EXT.includes('.xls'));
+  assert.match(LEGACY_EXT['.xls'], /另存为 \.xlsx/);
+  await assert.rejects(() => loadDocument(Buffer.from('x'), { ext: '.xls' }), /不支持的格式/);
 });
 
 test('解析器: CSV 读取', async () => {

@@ -8,7 +8,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ingestKnowledge, sha1 } from './ingest/pipeline.js';
-import { getLoader, SUPPORTED_EXT } from './ingest/loaders/index.js';
+import { getLoader, SUPPORTED_EXT, LEGACY_EXT } from './ingest/loaders/index.js';
 import { readManifest } from './ingest/indexStore.js';
 import { knowledgeInfo, reloadKnowledge } from './knowledge.js';
 
@@ -62,7 +62,7 @@ export async function saveAndIngest(rawName, buffer, {
   const name = safeFileName(rawName);
   const ext = path.extname(name).toLowerCase();
   if (!getLoader(ext)) {
-    throw errWithCode(`不支持的格式：${ext || '(无扩展名)'}`, 'UNSUPPORTED');
+    throw errWithCode(LEGACY_EXT[ext] || `不支持的格式：${ext || '(无扩展名)'}`, 'UNSUPPORTED');
   }
   if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
     throw errWithCode('文件内容为空', 'EMPTY');

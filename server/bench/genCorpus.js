@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { Document, Packer, Paragraph, HeadingLevel, TextRun } from 'docx';
 import pptxgen from 'pptxgenjs';
 import PDFDocument from 'pdfkit';
-import XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -374,10 +374,10 @@ const sla = [
   ['新疆西藏', '72小时', '72小时', '72小时', '3-15个工作日'],
 ];
 
-const wb = XLSX.utils.book_new();
-XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(freight), '运费标准');
-XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sla), '时效承诺');
-XLSX.writeFile(wb, path.join(OUT, '04-数据表格/运费与时效标准.xlsx'));
+const wb = new ExcelJS.Workbook();
+wb.addWorksheet('运费标准').addRows(freight);
+wb.addWorksheet('时效承诺').addRows(sla);
+await wb.xlsx.writeFile(path.join(OUT, '04-数据表格/运费与时效标准.xlsx'));
 
 const reasons = [
   ['原因编码', '原因名称', '所属大类', '可退款', '需上传凭证', '备注'],

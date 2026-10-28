@@ -12,15 +12,20 @@ export function useAdmin() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [m, c, l, k, s, i] = await Promise.all([
+      // 文档清单属于内部信息，走管理接口；没有令牌时退化为"只有规模统计"的公开接口
+      const knowledge = await getJSON('/api/admin/knowledge').catch(async (e) => {
+        if (e.status !== 401) throw e;
+        const pub = await getJSON('/api/knowledge');
+        return { ...pub, docs: [], failures: [], limited: true };
+      });
+      const [m, c, l, s, i] = await Promise.all([
         getJSON('/api/admin/models'),
         getJSON('/api/admin/cost'),
         getJSON('/api/admin/logs'),
-        getJSON('/api/knowledge'),
         getJSON('/api/admin/sessions'),
         getJSON('/api/integrations').catch(() => null),
       ]);
-      setData({ models: m.models, strategy: m.strategy, cost: c, logs: l, knowledge: k, sessions: s, integrations: i });
+      setData({ models: m.models, strategy: m.strategy, cost: c, logs: l, knowledge, sessions: s, integrations: i });
       setError(null);
     } catch (e) {
       // 401 时需要管理令牌，由界面提示用户输入

@@ -8,7 +8,7 @@ const FORMAT_LABEL = {
   word: 'DOCX', pdf: 'PDF', excel: 'XLSX', csv: 'CSV', ppt: 'PPTX', seed: '内置',
 };
 
-const FALLBACK_EXT = ['.md', '.markdown', '.txt', '.log', '.html', '.htm', '.json', '.jsonl', '.csv', '.docx', '.pdf', '.xlsx', '.xls', '.pptx'];
+const FALLBACK_EXT = ['.md', '.markdown', '.txt', '.log', '.html', '.htm', '.json', '.jsonl', '.csv', '.docx', '.pdf', '.xlsx', '.pptx'];
 // 展示用：不要把 15 个扩展名全铺出来，按主要格式列一遍就够
 const FORMAT_TEXT = ['MD', 'TXT', 'HTML', 'JSON', 'CSV', 'DOCX', 'PDF', 'XLSX', 'PPTX'];
 
@@ -102,9 +102,14 @@ export default function KnowledgeScreen() {
         <>
           <p className="hint">
             {knowledge.mode === 'index' ? '真实文档索引' : '内置种子文档（未执行入库）'} ·
-            {' '}{knowledge.docs.length} 篇文档 · {knowledge.chunks} 个向量块
+            {' '}{knowledge.docsCount ?? knowledge.docs?.length ?? 0} 篇文档 · {knowledge.chunks} 个向量块
             {knowledge.indexBytes ? ` · 索引 ${fmtBytes(knowledge.indexBytes)}` : ''}
           </p>
+          {knowledge.limited && (
+            <p className="hint">
+              当前只显示规模统计。要查看文档清单，请到「运营」页填写 ADMIN_TOKEN 后回来刷新。
+            </p>
+          )}
           {formats.length > 0 && (
             <div className="kb-formats">
               {formats.map(([fmt, v]) => (

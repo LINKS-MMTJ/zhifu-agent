@@ -186,20 +186,34 @@ export function createApp() {
     let clientClosed = false;
     req.on('close', () => { clientClosed = true; });
 
-    const send = (ev) => {
+    // 写事件时处理背压：客户端读得慢（弱网、手机切后台）时 write() 会返回 false，
+    // 这时必须等 drain 再继续，否则事件会全堆在内存里，长连接一多就 OOM
+    const send = async (ev) => {
       if (clientClosed || res.writableEnded) return false;
-      return res.write(`data: ${JSON.stringify(ev)}\n\n`);
+      const ok = res.write(`data: ${JSON.stringify(ev)}\n\n`);
+      if (!ok && !clientClosed && !res.writableEnded) {
+        await new Promise((resolve) => {
+          const done = () => {
+            res.off('drain', done);
+            res.off('close', done);
+            resolve();
+          };
+          res.once('drain', done);
+          res.once('close', done);
+        });
+      }
+      return true;
     };
-    send({ type: 'session', sessionId });
+    await send({ type: 'session', sessionId });
 
     try {
       for await (const ev of runAgent({ sessionId, message, confirm, strategy: effectiveStrategy })) {
         if (clientClosed) break; // 客户端走了就停止生成，释放资源
-        send(ev);
+        await send(ev);
       }
       finish(true);
     } catch {
-      send({ type: 'error', message: '服务暂时不可用，请稍后重试' });
+      await send({ type: 'error', message: '服务暂时不可用，请稍后重试' });
       finish(false, 'error');
     } finally {
       clearInterval(heartbeat);
@@ -260,12 +274,28 @@ export function createApp() {
   app.get('/api/admin/sessions', (req, res) => res.json(listSessions()));
   app.get('/api/admin/store', (req, res) => res.json(storeStats()));
 
-  // —— 知识库：返回真实接入的文档清单与索引统计 ——
+  // —— 知识库：公开接口只给规模统计，文档清单属于内部信息，放到管理接口 ——
   app.get('/api/knowledge', (req, res) => {
     const info = knowledgeInfo();
     res.json({
       mode: info.mode,                 // index=真实文档索引 / seed=内置种子
       chunks: info.chunks,
+      docsCount: info.docs,
+      builtAt: info.builtAt,
+      indexBytes: info.indexBytes,
+      byFormat: info.byFormat,
+      supportedFormats: UPLOAD_EXTENSIONS,
+      maxUploadMb: Math.round(MAX_UPLOAD_BYTES / 1048576),
+    });
+  });
+
+  // 完整清单（含文档标题、路径、失败明细）仅管理员可见
+  app.get('/api/admin/knowledge', (req, res) => {
+    const info = knowledgeInfo();
+    res.json({
+      mode: info.mode,
+      chunks: info.chunks,
+      docsCount: info.docs,
       docs: info.sources.map((s) => ({
         id: s.path,
         title: s.title || s.path,
@@ -412,6 +442,49 @@ export function createApp() {
     const result = applyRefund({ orderId: req.params.orderId });
     if (!result.found) return res.status(404).json({ error: '订单不存在' });
     res.json(result);
+  });
+
+  // —— Prometheus 指标导出：给企业监控直接抓取，不需要额外依赖 ——
+  app.get('/metrics', requireAdmin, (req, res) => {
+    const s = snapshot();
+    const q = quotaState();
+    const st = storeStats();
+    const lines = [
+      '# HELP zhifu_up 进程存活（恒为 1）',
+      '# TYPE zhifu_up gauge',
+      'zhifu_up 1',
+      '# HELP zhifu_uptime_seconds 进程运行时长',
+      '# TYPE zhifu_uptime_seconds gauge',
+      `zhifu_uptime_seconds ${s.uptimeSec}`,
+      '# HELP zhifu_requests_total 请求总数（按结果维度）',
+      '# TYPE zhifu_requests_total counter',
+      `zhifu_requests_total{result="ok"} ${s.counters.ok}`,
+      `zhifu_requests_total{result="error"} ${s.counters.error}`,
+      `zhifu_requests_total{result="rate_limited"} ${s.counters.rateLimited}`,
+      '# HELP zhifu_in_flight 当前在途请求',
+      '# TYPE zhifu_in_flight gauge',
+      `zhifu_in_flight ${s.inFlight}`,
+      '# HELP zhifu_latency_ms 服务端响应延迟分位',
+      '# TYPE zhifu_latency_ms gauge',
+      `zhifu_latency_ms{quantile="0.5"} ${s.latencyMs.p50}`,
+      `zhifu_latency_ms{quantile="0.95"} ${s.latencyMs.p95}`,
+      `zhifu_latency_ms{quantile="0.99"} ${s.latencyMs.p99}`,
+      '# HELP zhifu_event_loop_delay_ms 事件循环延迟',
+      '# TYPE zhifu_event_loop_delay_ms gauge',
+      `zhifu_event_loop_delay_ms{quantile="0.99"} ${s.eventLoopDelayMs.p99}`,
+      '# HELP zhifu_memory_bytes 进程内存',
+      '# TYPE zhifu_memory_bytes gauge',
+      `zhifu_memory_bytes{kind="rss"} ${Math.round((s.memory.rssMB || 0) * 1048576)}`,
+      `zhifu_memory_bytes{kind="heap_used"} ${Math.round((s.memory.heapUsedMB || 0) * 1048576)}`,
+      '# HELP zhifu_sessions 内存中的会话数',
+      '# TYPE zhifu_sessions gauge',
+      `zhifu_sessions ${st.sessions}`,
+      '# HELP zhifu_cost_spent 今日累计成本（元）',
+      '# TYPE zhifu_cost_spent gauge',
+      `zhifu_cost_spent ${q.spent}`,
+      '',
+    ];
+    res.type('text/plain; version=0.0.4; charset=utf-8').send(lines.join('\n'));
   });
 
   // —— 兜底 404 ——

@@ -1,7 +1,12 @@
-// Office 文档解析：Word(.docx) / Excel(.xlsx .xls .csv) / PowerPoint(.pptx)
-// 依赖：mammoth（Word 转 HTML，保留标题层级）、xlsx（SheetJS，读表格）、jszip（拆 OOXML 容器）
+// Office 文档解析：Word(.docx) / Excel(.xlsx .csv) / PowerPoint(.pptx)
+// 依赖：mammoth（Word 转 HTML，保留标题层级）、exceljs（读表格）、jszip（拆 OOXML 容器）
+//
+// 为什么不用 SheetJS：npm 上的 xlsx 停在 0.18.5，ReDoS 与原型污染公告长期无修复版，
+// 而上传的文件是不可信的；exceljs 在 registry 上持续维护，且覆盖 .xlsx 与 .csv。
+// 代价是不再支持老格式 .xls（BIFF），需要时先另存为 .xlsx。
 import mammoth from 'mammoth';
-import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
+import { Readable } from 'node:stream';
 import JSZip from 'jszip';
 import { htmlToText, tidy, decodeEntities } from './text.js';
 
@@ -45,48 +50,64 @@ export async function loadDocx(buffer) {
 }
 
 // 每个工作表输出为一段带 ## 标题的文本；每 30 行重复表头，避免切片后列语义丢失
-// 行列数做上限：SheetJS 有已知 ReDoS 公告（GHSA-5pgg-2g8v-p4x9，npm 上暂无修复版本），
-// 上传的是不可信文件，先限制解析规模，避免一个畸形表格把事件循环拖死
+// 行列数做上限：上传的文件不可信，先限制解析规模，避免畸形表格把事件循环拖死
 const MAX_SHEETS = Number(process.env.KB_MAX_SHEETS || 50);
 const MAX_ROWS_PER_SHEET = Number(process.env.KB_MAX_ROWS || 5000);
 
-export function loadSpreadsheet(buffer, { ext = '.xlsx' } = {}) {
-  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: false, cellNF: false, cellHTML: false });
+function cellText(cell) {
+  const v = cell?.value;
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'object') {
+    if (v.text !== undefined) return String(v.text).trim();
+    if (Array.isArray(v.richText)) return v.richText.map((r) => r.text || '').join('').trim();
+    if (v.result !== undefined) return String(v.result).trim();
+    if (v instanceof Date) return v.toISOString().slice(0, 10);
+    if (v.hyperlink) return String(v.text || v.hyperlink).trim();
+    return '';
+  }
+  return String(v).trim();
+}
+
+export async function loadSpreadsheet(buffer, { ext = '.xlsx' } = {}) {
+  const wb = new ExcelJS.Workbook();
+  if (ext === '.csv') {
+    // ExcelJS 的 csv 解析器按流读取；先去掉 BOM，否则首列表头会带不可见字符
+    const text = buffer.toString('utf8').replace(/^\uFEFF/, '');
+    await wb.csv.read(Readable.from([text]));
+  } else {
+    await wb.xlsx.load(buffer);
+  }
+
   const lines = [];
   let totalRows = 0;
   let truncated = 0;
+  let sheetCount = 0;
 
-  for (const name of wb.SheetNames.slice(0, MAX_SHEETS)) {
-    const ws = wb.Sheets[name];
-    if (!ws) continue;
-    let rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, blankrows: false, defval: '' });
-    if (!rows.length) continue;
-    if (rows.length > MAX_ROWS_PER_SHEET) {
-      truncated += rows.length - MAX_ROWS_PER_SHEET;
-      rows = rows.slice(0, MAX_ROWS_PER_SHEET);
-    }
+  wb.eachSheet((ws) => {
+    if (sheetCount >= MAX_SHEETS) return;
+    sheetCount += 1;
+    lines.push(`## 工作表：${ws.name}`);
 
-    lines.push(`## 工作表：${name}`);
-    const header = (rows[0] || []).map((c) => String(c ?? '').trim());
-    rows.forEach((row, i) => {
-      const cells = (row || []).map((c) => String(c ?? '').trim());
+    let header = [];
+    let rowIndex = 0;
+    ws.eachRow({ includeEmpty: false }, (row) => {
+      if (rowIndex >= MAX_ROWS_PER_SHEET) { truncated += 1; return; }
+      const cells = [];
+      row.eachCell({ includeEmpty: true }, (cell, col) => { cells[col - 1] = cellText(cell); });
       if (!cells.some(Boolean)) return;
-      totalRows++;
+      if (rowIndex === 0) header = cells;
+      rowIndex += 1;
+      totalRows += 1;
       lines.push(cells.join(' | '));
-      if (i > 0 && i % 30 === 0 && header.some(Boolean)) lines.push(header.join(' | '));
+      if (rowIndex > 1 && rowIndex % 30 === 0 && header.some(Boolean)) lines.push(header.join(' | '));
     });
     lines.push('');
-  }
+  });
 
   return {
     title: '',
     text: tidy(lines.join('\n')),
-    meta: {
-      sheets: Math.min(wb.SheetNames.length, MAX_SHEETS),
-      rows: totalRows,
-      truncatedRows: truncated,
-      ext,
-    },
+    meta: { sheets: sheetCount, rows: totalRows, truncatedRows: truncated, ext },
   };
 }
 
