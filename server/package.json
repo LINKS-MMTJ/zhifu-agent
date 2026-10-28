@@ -15,7 +15,7 @@
     "bench:soak": "node bench/loadtest.js --concurrency 50 --duration 300",
     "bench:kb": "node bench/kbScale.js",
     "eval": "node --env-file-if-exists=.env eval/runEval.js",
-    "eval:gate": "node eval/runEval.js && node eval/checkThreshold.js",
+    "eval:gate": "node eval/generateTestSet.js && node eval/runEval.js && node eval/checkThreshold.js",
     "judge": "node --env-file-if-exists=.env eval/deepseekJudge.js",
     "soak": "node bench/userSim.js --hours 10 --gap 2000 --session-pool 200 --port 4001",
     "soak:short": "node bench/userSim.js --minutes 5 --port 4001",
