@@ -167,6 +167,8 @@ export function storeStats() {
   };
 }
 
+// 列表只返回摘要：会话正文可能很长，列表接口带上全部正文会让响应体随会话数线性膨胀，
+// 也把用户对话全文一次性摊在管理页上。正文按需通过 peekSession 单独取。
 export function listSessions({ userId = null } = {}) {
   return [...sessions.values()]
     .filter((s) => !userId || s.userId === userId)
@@ -175,10 +177,23 @@ export function listSessions({ userId = null } = {}) {
       userId: s.userId || null,
       messageCount: s.messages.length,
       createdAt: s.createdAt,
+      lastAccess: s.lastAccess,
       preview: (s.messages.find((m) => m.role === 'user') || {}).content || '',
-      messages: s.messages,
     }))
     .sort((a, b) => b.createdAt - a.createdAt);
+}
+
+// 按需读取单个会话明细（只读，不创建、不刷新 LRU）
+export function peekSession(id) {
+  const s = sessions.get(String(id || ''));
+  if (!s) return null;
+  return {
+    id: s.id,
+    userId: s.userId || null,
+    createdAt: s.createdAt,
+    lastAccess: s.lastAccess,
+    messages: s.messages.slice(-100),
+  };
 }
 
 // —— 成本报表 ——

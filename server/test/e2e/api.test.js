@@ -43,6 +43,24 @@ test('GET /api/knowledge 管理接口返回完整文档清单', async () => {
   assert.ok(d.docs[0].content.length > 0);
 });
 
+test('管理: 会话列表只返回摘要，正文按需拉取', async () => {
+  const sessionId = sid('sess-detail');
+  await chat(srv.port, { sessionId, message: '退货运费谁出？' });
+
+  const list = await (await get('/api/admin/sessions')).json();
+  const row = list.find((s) => s.id === sessionId);
+  assert.ok(row, '列表应包含该会话');
+  assert.equal(row.messages, undefined, '列表不应携带对话正文');
+  assert.ok(row.messageCount >= 2);
+
+  const detail = await (await get(`/api/admin/sessions/${sessionId}`)).json();
+  assert.ok(detail.messages.length >= 2, '明细应返回完整消息');
+  assert.equal(detail.messages[0].role, 'user');
+
+  const missing = await get('/api/admin/sessions/not-exist-xyz');
+  assert.equal(missing.status, 404);
+});
+
 test('未知 /api 路径返回 404', async () => {
   const r = await get('/api/not-exist');
   assert.equal(r.status, 404);

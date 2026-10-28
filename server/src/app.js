@@ -5,7 +5,7 @@ import express from 'express';
 import cors from 'cors';
 import { runAgent } from './agent/orchestrator.js';
 import { router } from './router/modelRouter.js';
-import { getCallLogs, listSessions, costReport, storeStats, addMessage, getSession } from './store/sessions.js';
+import { getCallLogs, listSessions, peekSession, costReport, storeStats, addMessage, getSession } from './store/sessions.js';
 import { kbStore, knowledgeInfo } from './rag/knowledge.js';
 import { saveAndIngest, MAX_UPLOAD_BYTES, UPLOAD_EXTENSIONS } from './rag/upload.js';
 import { getOrderDetail, createReturn, applyRefund } from './tools/ecommerce.js';
@@ -321,6 +321,15 @@ export function createApp() {
   app.get('/api/admin/cost', (req, res) => res.json(costReport()));
   app.get('/api/admin/logs', (req, res) => res.json(getCallLogs(50)));
   app.get('/api/admin/sessions', (req, res) => res.json(listSessions()));
+
+  // 会话明细按需拉取：列表只给摘要，避免一次把全部正文推给前端
+  app.get('/api/admin/sessions/:id', (req, res) => {
+    const id = String(req.params.id || '');
+    if (!SESSION_ID_RE.test(id)) return res.status(400).json({ error: 'sessionId 不合法' });
+    const s = peekSession(id);
+    if (!s) return res.status(404).json({ error: '会话不存在或已过期' });
+    return res.json(s);
+  });
 
   // —— 客户侧会话列表：只能看到自己的（开启身份体系后才有区分意义）——
   app.get('/api/sessions', userAuth, (req, res) => {

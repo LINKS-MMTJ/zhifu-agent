@@ -16,7 +16,7 @@
 | 记忆与上下文 | **A-** | 会话 LRU + TTL + 2 秒防抖原子快照，重启恢复；多轮指代、槽位沿用、追问均可用；长对话采用"最近 8 条原文 + 更早 16 条滚动摘要"注入。**扣分项**：摘要由规则拼接生成，未做语义压缩 |
 | 规划能力 | **A-** | 规则规划为主（确定性、可单测），`PLANNER=llm` 时对规则漏掉的说法用模型 function calling 补齐；参数白名单 + 格式校验，写操作仍走确认。**扣分项**：默认仍是规则链路，模型规划需真实模型才能验证 |
 | 知识依据（Grounding） | **A-** | 多格式入库 + 结构感知切块 + 引用到章节；词面闸门拦无依据问题；增量与热加载；`VECTOR_STORE=pgvector` 可外置到 PostgreSQL 并在失败时回退内存。**扣分项**：默认仍是进程内索引 |
-| 评测与回归 | **A** | 327 项自动化测试（白盒 + 端到端）；1 万条规则评测 + 阈值门禁；用户模拟器 + 分位统计；DeepSeek 评委带上下文评分；CI 三段式 |
+| 评测与回归 | **A** | 328 项自动化测试（白盒 + 端到端）；1 万条规则评测 + 阈值门禁；用户模拟器 + 分位统计；DeepSeek 评委带上下文评分；CI 三段式 |
 | 可观测性 | **A** | W3C traceparent 透传、结构化 JSON 日志、按天审计、`/metrics`；配置 OTLP 端点后导出 OpenTelemetry span（对话/模型/工具/检索，带 `app.trace_id`），未配置零开销 |
 | 安全与合规 | **A-** | 管理接口令牌、日志/审计脱敏、内容安全前置、成本护栏、入参校验、安全响应头、CORS 白名单、知识库接口拆分、依赖漏洞清零；终端用户可开启访客令牌（会话归属 + 越权 403）。**扣分项**：访客令牌不是实名身份，企业场景仍需接 SSO/OIDC |
 | 可靠性 | **A** | 并发上限、单 IP 限流、会话串行锁、模型熔断与降级、SSE 心跳与背压（`write` 返回 false 时等 `drain`）、客户端断开即停、优雅关闭 |
@@ -54,7 +54,7 @@
 验证命令与结果：
 
 ```
-node --test                      → 327 passed / 0 failed
+node --test                      → 328 passed / 0 failed
 npm run eval:gate                → 6 类全部 100%，单条平均成本 ¥0.00019，通过
 npm run gen:corpus               → 15 个文件 / 8 种格式（xlsx 改由 exceljs 生成）
 npm audit --omit=dev             → server 0、web 0
@@ -84,7 +84,7 @@ DeepSeek 评委 25 条抽样           → 平均 4.64/5
 ```powershell
 cd "客服 Agent\server"
 npm ci
-node --test                    # 327 项
+node --test                    # 328 项
 npm run eval:gate              # 1 万条评测 + 阈值门禁
 npm run ingest                 # 多格式入库（15 篇 / 8 格式 / 105 块）
 npm audit --omit=dev           # 0 漏洞
