@@ -19,8 +19,14 @@ function safeEqual(a, b) {
 
 export function requireAdmin(req, res, next) {
   const token = process.env.ADMIN_TOKEN || '';
-  // 未配置时放行；启动日志里会给出明确告警（见 index.js）
-  if (!token) return next();
+  // 未配置令牌：开发/测试环境放行（启动日志有告警），生产环境直接禁用管理接口。
+  // 否则部署时忘配一个环境变量，就等于把会话全文和写操作裸奔到公网。
+  if (!token) {
+    if (process.env.NODE_ENV === 'production') {
+      return res.status(503).json({ error: '服务未配置 ADMIN_TOKEN，管理接口已禁用' });
+    }
+    return next();
+  }
 
   const provided = req.get('x-admin-token')
     || String(req.get('authorization') || '').replace(/^Bearer\s+/i, '');

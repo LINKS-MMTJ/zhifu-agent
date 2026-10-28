@@ -26,14 +26,39 @@ const ORDERS = {
   },
 };
 
+// 手机号归属校验：订单里存的是脱敏号（138****1234），用户提供的是完整号，
+// 按"前 3 位 + 后 4 位"比对，避免把中间打码位当真实数据比较
+export function phoneMatches(masked, raw) {
+  const m = String(masked || '').replace(/\D/g, '');
+  const r = String(raw || '').replace(/\D/g, '');
+  if (m.length < 7 || r.length !== 11) return false;
+  return r.slice(0, 3) === m.slice(0, 3) && r.slice(-4) === m.slice(-4);
+}
+
+// 订单归属手机号（脱敏）。写操作执行前用它做归属校验
+export function getOrderPhone(orderId) {
+  const order = ORDERS[String(orderId || '').toUpperCase()];
+  return order ? order.phone : null;
+}
+
 function findOrder({ orderId, phone }) {
-  if (orderId && ORDERS[orderId]) return ORDERS[orderId];
-  // 按手机号兜底找最近一单
-  if (phone) {
-    const hit = Object.values(ORDERS).find((o) => o.phone === phone);
-    if (hit) return hit;
+  const byId = orderId ? ORDERS[String(orderId).toUpperCase()] : null;
+  if (byId) {
+    // 同时给了手机号时必须与订单归属一致，否则一律按"查不到"处理，
+    // 防止拿别人的订单号 + 自己的手机号把订单信息套出来
+    if (phone && !phoneMatches(byId.phone, phone)) return null;
+    return byId;
   }
+  // 按手机号兜底找最近一单
+  if (phone) return Object.values(ORDERS).find((o) => phoneMatches(o.phone, phone)) || null;
   return null;
+}
+
+// 写操作被拒时区分"订单不存在"与"归属不符"：前者让用户核对单号，后者是越权
+function writeMissHint(args, action) {
+  const owner = args.orderId ? getOrderPhone(args.orderId) : null;
+  if (owner && args.phone) return '订单号与手机号不匹配，请核对后再试。';
+  return `未找到该订单，无法${action}。`;
 }
 
 export function queryOrder(args = {}) {
@@ -77,7 +102,7 @@ export function trackLogistics(args = {}) {
 
 export function createReturn(args = {}) {
   const order = findOrder(args);
-  if (!order) return { found: false, hint: '未找到该订单，无法发起退货。' };
+  if (!order) return { found: false, hint: writeMissHint(args, '发起退货') };
   if (!order.returnable) return { found: true, orderId: order.orderId, rejected: true, note: '该订单当前状态暂不支持退货（如运输中请先确认签收）。' };
   return {
     found: true, orderId: order.orderId, product: order.product,
@@ -89,7 +114,7 @@ export function createReturn(args = {}) {
 
 export function applyRefund(args = {}) {
   const order = findOrder(args);
-  if (!order) return { found: false, hint: '未找到该订单，无法申请退款。' };
+  if (!order) return { found: false, hint: writeMissHint(args, '申请退款') };
   return {
     found: true, orderId: order.orderId, product: order.product,
     amount: order.amount, eta: '1-7 个工作日',

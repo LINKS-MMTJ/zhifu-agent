@@ -6,6 +6,7 @@ import { router } from '../router/modelRouter.js';
 import { streamModel } from '../llm/index.js';
 import { retrieve } from '../rag/knowledge.js';
 import { getTool, matchToolByTrigger } from '../tools/registry.js';
+import { getOrderPhone, phoneMatches } from '../tools/ecommerce.js';
 import { extractArgs } from '../integrations/connectors.js';
 import { emitEvent } from '../integrations/events.js';
 import { getSession, addMessage, logCall } from '../store/sessions.js';
@@ -127,6 +128,27 @@ function extractPhone(text) {
   return m ? m[0] : null;
 }
 
+// —— 写操作的三道闸 ——
+// 1) 时效：确认卡不能无限期挂着，否则上午说要退货、晚上随口一句"确认"就执行
+const confirmTtlMs = () => Number(process.env.PENDING_CONFIRM_TTL_MS || 5 * 60 * 1000);
+
+// 2) 归属：会话里出现过手机号时，写操作的订单必须属于这个号码。
+//    没有终端用户登录体系时，手机号是当前可用的最轻量归属凭据；
+//    没有手机号时只能按会话隔离，审计里会标 unverified。
+function checkWriteOwnership(args = {}) {
+  const orderId = args.orderId;
+  if (!orderId) return { ok: true };
+  const owner = getOrderPhone(orderId);
+  if (!owner) return { ok: true }; // 订单不存在交给工具自己报
+  if (!args.phone) return { ok: true, unverified: true };
+  return phoneMatches(owner, args.phone) ? { ok: true } : { ok: false };
+}
+
+// 3) 幂等：每次确认卡带一个 idem，执行后记下结果，重复确认不再执行第二次
+function newIdem() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 // —— 依据意图规划工具调用 ——
 const PARAM_LABEL = {
   orderId: '订单号（一般以 SO 开头，可在订单详情页看到）',
@@ -152,7 +174,7 @@ function missingParams(def, args) {
   return missing;
 }
 
-function planTools(intent, text, carriedOrderId = null) {
+function planTools(intent, text, carriedOrderId = null, carriedPhone = null) {
   // 外部系统的触发词是人工配置的明确指令（建工单 / 查客户档案），优先级高于通用意图
   const hit = matchToolByTrigger(text);
   if (hit) {
@@ -162,13 +184,14 @@ function planTools(intent, text, carriedOrderId = null) {
 
   // 本句没写订单号时，沿用上文里最近一次出现的订单号（"物流到哪了"接"查订单 SO20260001"）
   const orderId = extractOrderId(text) || carriedOrderId;
-  const phone = extractPhone(text);
+  // 手机号同理：本句给了就用本句的，否则沿用本会话验证过的号码（用于写操作归属校验）
+  const phone = extractPhone(text) || carriedPhone;
   const internal = (() => {
     switch (intent) {
       case 'order': return [{ name: 'queryOrder', args: { orderId, phone } }];
       case 'logistics': return [{ name: 'trackLogistics', args: { orderId, phone } }];
-      case 'return': return [{ name: 'createReturn', args: { orderId, reason: '用户申请退货' } }];
-      case 'refund': return [{ name: 'applyRefund', args: { orderId } }];
+      case 'return': return [{ name: 'createReturn', args: { orderId, phone, reason: '用户申请退货' } }];
+      case 'refund': return [{ name: 'applyRefund', args: { orderId, phone } }];
       default: return [];
     }
   })();
@@ -202,6 +225,11 @@ export async function* runAgent({ sessionId, message, confirm = false, strategy 
   const prior = readContext(session.messages);
   const ctxDep = isContextDependent(message);
   addMessage(sessionId, { role: 'user', content: message });
+
+  // 用户在本会话里报过手机号，就把它记成"归属凭据"：
+  // 后续写操作只允许办理这个号码名下的订单（真正的实名体系需要接入 SSO，见审核报告）
+  const claimedPhone = extractPhone(message);
+  if (claimedPhone) session.verifiedPhone = claimedPhone;
 
   // 先识别意图，再由「意图 + 文本」判定复杂度（复杂度依赖任务形态，不是业务关键词）
   let intent = detectIntent(message);
@@ -302,10 +330,61 @@ export async function* runAgent({ sessionId, message, confirm = false, strategy 
     const pa = session.pendingAction;
     session.pendingAction = null;
     const def = getTool(pa.tool);
+    const ttl = confirmTtlMs();
+    const actor = `session:${sessionId}`;
+
+    // 闸 1：时效。超过有效期一律作废，必须重新发起，避免"隔了很久的一句确认"把钱退出去
+    if (!pa.at || Date.now() - pa.at > ttl) {
+      const text = `这次确认已经超过 ${Math.max(1, Math.round(ttl / 60000))} 分钟，为安全起见已自动作废。如果还需要办理，请把诉求再说一次，我重新发起。`;
+      addMessage(sessionId, { role: 'assistant', content: text, mode: 'tool', intent });
+      audit({
+        actor,
+        action: 'tool.write',
+        target: pa.args?.orderId || pa.tool,
+        result: 'expired',
+        meta: { tool: pa.tool, idem: pa.idem, ageMs: Date.now() - (pa.at || 0) },
+      });
+      for (const piece of chunkText(text, 4)) {
+        yield { type: 'token', text: piece };
+        if (!process.env.EVAL_FAST) await sleep(10);
+      }
+      yield { type: 'done', modelId: null, cost: 0, latencyMs: 0, expired: true };
+      return;
+    }
+
+    // 闸 2：归属。会话里给过手机号时，订单必须属于这个号码
+    const own = checkWriteOwnership(pa.args);
+    if (!own.ok) {
+      const text = '这笔订单和你在本会话里提供的手机号对不上，我不能直接办理。请用下单手机号核对后再试，或联系人工客服。';
+      addMessage(sessionId, { role: 'assistant', content: text, mode: 'tool', intent });
+      audit({
+        actor,
+        action: 'tool.write',
+        target: pa.args?.orderId || pa.tool,
+        result: 'denied',
+        meta: { tool: pa.tool, idem: pa.idem, reason: 'ownership_mismatch' },
+      });
+      for (const piece of chunkText(text, 4)) {
+        yield { type: 'token', text: piece };
+        if (!process.env.EVAL_FAST) await sleep(10);
+      }
+      yield { type: 'done', modelId: null, cost: 0, latencyMs: 0, denied: 'ownership_mismatch' };
+      return;
+    }
+
     try {
       const result = await def.handler(pa.args);
       toolResults.push({ name: pa.tool, args: pa.args, result });
+      // 闸 3：执行后记录幂等结果，重复确认不会再执行一次
+      session.lastWrite = { tool: pa.tool, args: pa.args, at: Date.now(), idem: pa.idem };
       emitEvent('tool.executed', { tool: pa.tool, readonly: def.readonly, source: def.source || 'builtin', ok: result?.ok !== false });
+      audit({
+        actor,
+        action: 'tool.write',
+        target: pa.args?.orderId || pa.tool,
+        result: result?.ok === false || result?.found === false ? 'rejected' : 'ok',
+        meta: { tool: pa.tool, idem: pa.idem, unverified: Boolean(own.unverified) },
+      });
       yield {
         type: 'tool', name: pa.tool, args: pa.args, result,
         action: buildAction(pa.tool, pa.args, result) || null,
@@ -314,10 +393,35 @@ export async function* runAgent({ sessionId, message, confirm = false, strategy 
       const result = { ok: false, error: `外部系统调用失败：${err.message}` };
       toolResults.push({ name: pa.tool, args: pa.args, result });
       emitEvent('tool.failed', { tool: pa.tool, error: err.message });
+      audit({
+        actor,
+        action: 'tool.write',
+        target: pa.args?.orderId || pa.tool,
+        result: 'error',
+        meta: { tool: pa.tool, idem: pa.idem, error: err.message },
+      });
       yield { type: 'tool', name: pa.tool, args: pa.args, result, action: null };
     }
+  } else if (confirm && session.lastWrite && Date.now() - session.lastWrite.at < confirmTtlMs()) {
+    // 重复确认（双击、网络重发）：已经办过就不再办一次，直接告知结果
+    const desc = getTool(session.lastWrite.tool)?.desc || '操作';
+    const text = `这笔【${desc}】刚刚已经办理完成，不用再确认了。还有其他需要吗？`;
+    addMessage(sessionId, { role: 'assistant', content: text, mode: 'tool', intent });
+    audit({
+      actor: `session:${sessionId}`,
+      action: 'tool.write',
+      target: session.lastWrite.args?.orderId || session.lastWrite.tool,
+      result: 'duplicate',
+      meta: { tool: session.lastWrite.tool, idem: session.lastWrite.idem },
+    });
+    for (const piece of chunkText(text, 4)) {
+      yield { type: 'token', text: piece };
+      if (!process.env.EVAL_FAST) await sleep(10);
+    }
+    yield { type: 'done', modelId: null, cost: 0, latencyMs: 0, duplicate: true };
+    return;
   } else {
-    for (const tc of planTools(intent, message, extractOrderId(message) ? null : prior.orderId)) {
+    for (const tc of planTools(intent, message, extractOrderId(message) ? null : prior.orderId, session.verifiedPhone || null)) {
       const def = getTool(tc.name);
       if (!def) continue;
 
@@ -344,7 +448,8 @@ export async function* runAgent({ sessionId, message, confirm = false, strategy 
       }
 
       if (!def.readonly) {
-        session.pendingAction = { tool: tc.name, args: tc.args };
+        // 确认卡带上时间戳与幂等键：过期作废、重复确认不重复执行
+        session.pendingAction = { tool: tc.name, args: tc.args, at: Date.now(), idem: newIdem() };
         awaitingConfirm = true;
         const summary = `即将执行【${def.desc}】${tc.args.orderId ? `，订单号 ${tc.args.orderId}` : ''}，是否确认？`;
         // 把确认请求也写进会话：否则下一轮模型只看到用户单方面说"我要退货"，

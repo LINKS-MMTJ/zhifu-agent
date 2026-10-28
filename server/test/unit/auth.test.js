@@ -32,6 +32,16 @@ test('鉴权: 未设置 ADMIN_TOKEN 时放行（本地演示）', () => {
   assert.equal(run(requireAdmin, req()).passed, true);
 });
 
+test('鉴权: 生产环境未配置 ADMIN_TOKEN 时直接禁用管理接口', () => {
+  delete process.env.ADMIN_TOKEN;
+  const prev = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'production';
+  const { passed, res: r } = run(requireAdmin, req());
+  process.env.NODE_ENV = prev;
+  assert.equal(passed, false, '生产环境不能因为漏配环境变量就放行');
+  assert.equal(r.code, 503);
+});
+
 test('鉴权: 设置后无令牌返回 401', () => {
   process.env.ADMIN_TOKEN = 'secret-token';
   const { passed, res: r } = run(requireAdmin, req());

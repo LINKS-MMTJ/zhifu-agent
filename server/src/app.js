@@ -379,7 +379,8 @@ export function createApp() {
       audit({
         actor: 'api',
         action: 'tool.call',
-        target: def.name,
+        // 写操作把订单号一并记下：事后追责需要知道"对哪一单做了什么"
+        target: def.readonly || !args.orderId ? def.name : `${def.name}:${args.orderId}`,
         result: result?.ok === false ? 'failed' : 'ok',
         meta: { argKeys: Object.keys(args), readonly: def.readonly, source: def.source || 'builtin' },
       });
